@@ -1,0 +1,10 @@
+{
+  "name": "bag-of-holding-mcp",
+  "version": "0.1.0",
+  "description": "The AI MCP server as a middle layer to the bag-of-holding engine.",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
