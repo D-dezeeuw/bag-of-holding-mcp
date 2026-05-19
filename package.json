@@ -1,0 +1,70 @@
+{
+  "name": "@zeeuw/bag-of-holding-mcp",
+  "version": "0.0.1",
+  "description": "Model Context Protocol server for @zeeuw/bag-of-holding. Exposes the SRD 5.2 rules kernel — dice, checks, combat, conditions, XP, beats, movesets, SRD lookups — as MCP tools so any MCP-aware AI host can run rules-correct, replay-deterministic D&D without trusting the model to do the math.",
+  "type": "module",
+  "main": "index.js",
+  "types": "./index.d.ts",
+  "bin": {
+    "bag-of-holding-mcp": "./bin/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "src/",
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "dnd",
+    "dungeons-and-dragons",
+    "5e",
+    "srd",
+    "srd-5.2",
+    "ttrpg",
+    "rpg",
+    "ai-dm",
+    "ai-dungeon-master",
+    "claude",
+    "bag-of-holding"
+  ],
+  "author": "Danny de Zeeuw <danny@nekomedia.nl>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/D-dezeeuw/bag-of-holding-mcp.git"
+  },
+  "homepage": "https://github.com/D-dezeeuw/bag-of-holding-mcp#readme",
+  "bugs": "https://github.com/D-dezeeuw/bag-of-holding-mcp/issues",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "test": "node --test tests/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-include='index.js' --test-coverage-include='bin/**' tests/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm test && npm run typecheck"
+  },
+  "peerDependencies": {
+    "@zeeuw/bag-of-holding": "^0.2.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@zeeuw/bag-of-holding": "file:../bag-of-holding",
+    "typescript": "^5.6.0"
+  }
+}
