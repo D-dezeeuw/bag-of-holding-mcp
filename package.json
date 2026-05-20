@@ -57,7 +57,7 @@
     "prepublishOnly": "npm test && npm run typecheck"
   },
   "peerDependencies": {
-    "@zeeuw/bag-of-holding": "^0.2.0"
+    "@zeeuw/bag-of-holding": "^1.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
