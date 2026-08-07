@@ -1,8 +1,8 @@
 # Test gate. Nothing merges on a red suite.
 #
 # Before this workflow no repo in the ecosystem ran a single test in CI, which
-# is how a delisted model id, a version chimera in a vendored copy, and a
-# replay path that throws on real sessions all reached the shipped game.
+# is how a delisted model id, a version chimera in a vendored copy, and a replay
+# path that throws on real sessions all reached the shipped game.
 
 name: CI
 
@@ -19,6 +19,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm ci || npm install
+
+      # Local development links the engine as a sibling checkout
+      # (file:../bag-of-holding), which does not exist on a runner. CI resolves
+      # the same package from npm instead — the peer range is the contract, and
+      # this proves the server works against a published engine rather than
+      # against whatever happens to be on one machine.
+      - name: Install with the published engine
+        run: |
+          npm pkg delete "devDependencies.@zeeuw/bag-of-holding"
+          npm install --no-package-lock
+          npm install --no-save --no-package-lock "@zeeuw/bag-of-holding@$(node -p "require('./package.json').peerDependencies['@zeeuw/bag-of-holding']")"
+
       - run: npm test
       - run: npm run typecheck
