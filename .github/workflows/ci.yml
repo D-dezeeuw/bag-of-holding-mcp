@@ -30,11 +30,17 @@ jobs:
       # capability was unbuildable until someone remembered to publish. Testing
       # the source is also the more honest gate: it fails here, on the commit
       # that broke it, rather than after a release.
+      # Point the dev dependency AT the source rather than installing it
+      # afterwards: a separate `npm install` of the git spec has to reconcile
+      # itself against the peer range and fails before it starts, because the
+      # range names a version npm has not seen yet. Rewriting the dev
+      # dependency lets one resolution satisfy both — the github tarball's own
+      # package.json reports 2.4.0, which the peer range accepts.
       - name: Install with the engine from source
         run: |
-          npm pkg delete "devDependencies.@zeeuw/bag-of-holding"
+          npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main"
           npm install --no-package-lock
-          npm install --no-save --no-package-lock "github:D-dezeeuw/bag-of-holding#main"
+          node -p "'engine ' + require('@zeeuw/bag-of-holding/package.json').version + ' installed from source'"
 
       # The peer range is still the published contract. This says out loud when
       # the engine this package DECLARES is not on npm yet, so "works in CI,
