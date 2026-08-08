@@ -21,15 +21,32 @@ jobs:
           node-version: '20'
 
       # Local development links the engine as a sibling checkout
-      # (file:../bag-of-holding), which does not exist on a runner. CI resolves
-      # the same package from npm instead — the peer range is the contract, and
-      # this proves the server works against a published engine rather than
-      # against whatever happens to be on one machine.
-      - name: Install with the published engine
+      # (file:../bag-of-holding), which does not exist on a runner.
+      #
+      # CI installs it from the engine's OWN repository rather than from npm.
+      # The three repos move together and a release lags the source by design —
+      # resolving the peer range from the registry meant CI could only ever test
+      # against the last published engine, so a tool written against a new
+      # capability was unbuildable until someone remembered to publish. Testing
+      # the source is also the more honest gate: it fails here, on the commit
+      # that broke it, rather than after a release.
+      - name: Install with the engine from source
         run: |
           npm pkg delete "devDependencies.@zeeuw/bag-of-holding"
           npm install --no-package-lock
-          npm install --no-save --no-package-lock "@zeeuw/bag-of-holding@$(node -p "require('./package.json').peerDependencies['@zeeuw/bag-of-holding']")"
+          npm install --no-save --no-package-lock "github:D-dezeeuw/bag-of-holding#main"
+
+      # The peer range is still the published contract. This says out loud when
+      # the engine this package DECLARES is not on npm yet, so "works in CI,
+      # uninstallable for users" cannot pass silently.
+      - name: Warn when the declared engine is unpublished
+        run: |
+          want=$(node -p "require('./package.json').peerDependencies['@zeeuw/bag-of-holding']")
+          if npm view "@zeeuw/bag-of-holding@$want" version >/dev/null 2>&1; then
+            echo "engine $want is on npm"
+          else
+            echo "::warning::peerDependencies declares @zeeuw/bag-of-holding@$want, which is not published. CI is green against the engine source, but installing this package will fail for users until that version ships to npm."
+          fi
 
       - run: npm test
       - run: npm run typecheck
