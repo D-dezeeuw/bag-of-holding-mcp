@@ -40,7 +40,9 @@ jobs:
         run: |
           npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main"
           npm install --no-package-lock
-          node -p "'engine ' + require('@zeeuw/bag-of-holding/package.json').version + ' installed from source'"
+          # Read the file, not the package path: the engine's `exports` map does
+          # not expose ./package.json, so requiring it fails the whole step.
+          node -p "'engine ' + JSON.parse(require('fs').readFileSync('node_modules/@zeeuw/bag-of-holding/package.json')).version + ' installed from source'"
 
       # The peer range is still the published contract. This says out loud when
       # the engine this package DECLARES is not on npm yet, so "works in CI,
