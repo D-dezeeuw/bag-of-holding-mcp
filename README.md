@@ -54,6 +54,8 @@ Restart Claude Desktop and the engine's 46 tools (dice, checks, combat, conditio
 | **Beats** | `beats_archetype_roles`, `beats_validate`, `beats_make_empty`, `beats_thread_create`, `beats_thread_current`, `beats_is_ready`, `beats_is_complete`, `beats_thread_advance` |
 | **Character** | `character_derive_sheet`, `character_skill_ability_map` |
 | **SRD lookups** | `srd_list`, `srd_get`, `srd_dump` |
+| **Spellcasting** | `spells_for_class`, `spells_classes_for`, `spells_max_level`, `spells_fresh_slots`, `spells_cast`, `spells_rest`, `spells_cantrip_damage` |
+| **Monster tiers** | `monsters_elevate`, `monsters_for_target_cr` |
 
 Every tool accepts an optional `session` parameter; omit it to use the default (unseeded) singleton, fine for one-shot mechanic queries. For an actual campaign, always `engine_create_session({ seed: <int> })` first so rolls are reproducible.
 
