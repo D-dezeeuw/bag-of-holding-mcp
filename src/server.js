@@ -23,6 +23,8 @@ import { movesetsTools } from './tools/movesets.js';
 import { beatsTools } from './tools/beats.js';
 import { characterTools } from './tools/character.js';
 import { srdTools } from './tools/srd.js';
+import { spellsTools } from './tools/spells.js';
+import { monsterTools } from './tools/monsters.js';
 import { engineTools } from './tools/engine.js';
 
 const SERVER_NAME = 'bag-of-holding';
@@ -54,7 +56,9 @@ export function createServer(opts = {}) {
     ...movesetsTools(sessions),
     ...beatsTools(sessions),
     ...characterTools(sessions),
-    ...srdTools(sessions)
+    ...srdTools(sessions),
+    ...spellsTools(sessions),
+    ...monsterTools(sessions)
   ];
 
   for (const tool of allTools) {
