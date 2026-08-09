@@ -20,6 +20,12 @@ Model Context Protocol server for [`@zeeuw/bag-of-holding`](https://github.com/D
 
 ## Install
 
+> **Not on npm yet.** Neither this package nor its engine peer
+> (`@zeeuw/bag-of-holding` ≥ 2.5.0) has been published, so the command below
+> will not work until they are. Until then, clone both repos side by side and
+> run from source (`npm install && npm start` here resolves the engine via its
+> `file:../bag-of-holding` dev link).
+
 ```bash
 npm install -g @zeeuw/bag-of-holding-mcp
 ```
@@ -38,7 +44,7 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
 }
 ```
 
-Restart Claude Desktop and the engine's 46 tools (dice, checks, combat, conditions, XP, beats, movesets, SRD lookups, sessions) appear automatically. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play.
+Restart Claude Desktop and the engine's 63 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions) appear automatically. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play.
 
 ## Tool inventory
 
@@ -47,13 +53,14 @@ Restart Claude Desktop and the engine's 46 tools (dice, checks, combat, conditio
 | **Sessions** | `engine_create_session`, `engine_destroy_session`, `engine_list_sessions`, `engine_get_roll_log`, `engine_verify_log` |
 | **Dice** | `dice_roll`, `dice_roll_advantage`, `dice_roll_disadvantage`, `dice_roll_die`, `dice_parse` |
 | **Checks** | `checks_ability_check`, `checks_saving_throw`, `checks_mod_from_score`, `checks_clamp_dc` |
-| **Combat** | `combat_roll_initiative`, `combat_attack_roll`, `combat_damage_roll`, `combat_apply_mastery`, `combat_mastery_properties` |
+| **Combat** | `combat_roll_initiative`, `combat_attack_roll`, `combat_damage_roll`, `combat_apply_mastery`, `combat_mastery_properties`, `combat_apply_damage`, `combat_heal`, `combat_grant_temp_hp`, `combat_drop_to_zero`, `combat_death_save` |
+| **Rests** | `rest_short`, `rest_long`, `rest_spend_hit_die` |
 | **Conditions** | `conditions_list`, `conditions_apply`, `conditions_remove`, `conditions_has`, `conditions_exhaustion_gain`, `conditions_exhaustion_reduce`, `conditions_exhaustion_set`, `conditions_exhaustion_status` |
 | **XP** | `xp_level_for_xp`, `xp_next_level_threshold`, `xp_award_milestone`, `xp_thresholds`, `xp_proficiency_for_level` |
 | **Movesets** | `movesets_legal` |
 | **Beats** | `beats_archetype_roles`, `beats_validate`, `beats_make_empty`, `beats_thread_create`, `beats_thread_current`, `beats_is_ready`, `beats_is_complete`, `beats_thread_advance` |
 | **Character** | `character_derive_sheet`, `character_skill_ability_map` |
-| **SRD lookups** | `srd_list`, `srd_get`, `srd_dump` |
+| **SRD lookups** | `srd_list`, `srd_get`, `srd_dump` — registries: species, classes, backgrounds, feats, spells, items, monsters |
 | **Spellcasting** | `spells_for_class`, `spells_classes_for`, `spells_max_level`, `spells_fresh_slots`, `spells_cast`, `spells_rest`, `spells_cantrip_damage` |
 | **Monster tiers** | `monsters_elevate`, `monsters_for_target_cr` |
 

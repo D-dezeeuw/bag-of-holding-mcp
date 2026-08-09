@@ -18,7 +18,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # package.json declares engines.node >=22; testing on 20 gated a
+          # contract the package does not make.
+          node-version: '22'
 
       # Local development links the engine as a sibling checkout
       # (file:../bag-of-holding), which does not exist on a runner.
@@ -35,7 +37,8 @@ jobs:
       # itself against the peer range and fails before it starts, because the
       # range names a version npm has not seen yet. Rewriting the dev
       # dependency lets one resolution satisfy both — the github tarball's own
-      # package.json reports 2.4.0, which the peer range accepts.
+      # package.json reports the engine's current version, which the caret
+      # peer range accepts as long as the major matches.
       - name: Install with the engine from source
         run: |
           npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main"

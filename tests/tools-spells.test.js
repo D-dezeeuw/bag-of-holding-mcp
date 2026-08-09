@@ -135,3 +135,17 @@ test('every spells_* tool reports a bad session as an error', async () => {
     assert.equal(r.isError, true, `${tool.name} swallowed an unknown session`);
   }
 });
+
+test('spells_cast forwards the ritual flag (unprepared ritual is refused)', async () => {
+  const { run } = setup(spellsTools);
+  const actor = { spellSlots: [{ level: 1, used: 0, max: 2 }], spellsPrepared: [] };
+  const { data } = await run('spells_cast', { actor, spellId: 'identify', ritual: true });
+  assert.equal(data.ok, false);
+  assert.match(data.reason, /prepar/i);
+});
+
+test('spells_cantrip_damage reports an unknown cantrip', async () => {
+  const { run } = setup(spellsTools);
+  const r = await run('spells_cantrip_damage', { spellId: 'not-a-cantrip', casterLevel: 5 });
+  assert.equal(r.isError, true);
+});

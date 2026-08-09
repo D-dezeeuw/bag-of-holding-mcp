@@ -91,6 +91,92 @@ export function combatTools(sessions) {
           return toolResult({ properties: [...engine.Combat.MASTERY_PROPERTIES] });
         } catch (err) { return toolError(err); }
       }
+    },
+
+    // === Damage pipeline ===
+    //
+    // The tools above ROLL; these APPLY. Without them the host had
+    // to do its own hp arithmetic — resistances, temp HP, the
+    // damage-at-zero death-save path — which is exactly the math
+    // this server exists to keep out of the model's hands. Each
+    // returns the engine's canonical result with the updated actor
+    // inside; the host stores the actor, the engine never does.
+    {
+      name: 'combat_apply_damage',
+      description: 'Apply damage to an actor through the full SRD pipeline: resistance/vulnerability/immunity, temp HP absorption, dropping to 0, instant death, damage-while-down. Returns { actor, amount, finalAmount, tempHpAbsorbed, hpBefore, hpAfter, outcome } where outcome is damaged|downed|dead|absorbed|immune. The returned actor replaces the one you passed.',
+      input: {
+        actor: z.record(z.unknown()).describe('Actor record (hp, hpMax, tempHp?, conditions?, damageResistances?, damageImmunities?, deathSaves?).'),
+        amount: z.number().int().nonnegative().describe('Raw damage before modifiers.'),
+        type: z.string().optional().describe('Damage type (e.g. "slashing", "fire") — drives resistances/immunities.'),
+        critical: z.boolean().optional().describe('Whether the hit was critical (matters for damage-while-down: a crit is two failed saves).'),
+        source: z.string().optional().describe('Free-form origin tag echoed back in the result.'),
+        session: SessionField
+      },
+      handler: async ({ actor, amount, type, critical, source, session }) => {
+        try {
+          const engine = sessions.get(session);
+          return toolResult(engine.Combat.applyDamage(actor, { amount, type, critical, source }));
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
+      name: 'combat_heal',
+      description: 'Heal an actor. Caps at hpMax; healing an actor at 0 HP removes unconscious and resets the death-save tracker per the SRD. Returns { healed, hpBefore, hpAfter, actor }.',
+      input: {
+        actor: z.record(z.unknown()).describe('Actor record.'),
+        amount: z.number().int().nonnegative().describe('Hit points to restore.'),
+        session: SessionField
+      },
+      handler: async ({ actor, amount, session }) => {
+        try {
+          const engine = sessions.get(session);
+          return toolResult(engine.Combat.heal(actor, amount));
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
+      name: 'combat_grant_temp_hp',
+      description: 'Grant temporary hit points. SRD rule: temp HP does not stack — the actor keeps the larger of current and new. Returns the updated actor.',
+      input: {
+        actor: z.record(z.unknown()).describe('Actor record.'),
+        amount: z.number().int().nonnegative().describe('Temporary hit points offered.'),
+        session: SessionField
+      },
+      handler: async ({ actor, amount, session }) => {
+        try {
+          const engine = sessions.get(session);
+          return toolResult({ actor: engine.Combat.grantTempHp(actor, amount) });
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
+      name: 'combat_drop_to_zero',
+      description: 'Drop an actor to 0 HP: applies the unconscious condition and a fresh death-save tracker. Use combat_apply_damage for damage-driven drops — this is the explicit host-decided drop (e.g. a narrative collapse). Returns the updated actor.',
+      input: {
+        actor: z.record(z.unknown()).describe('Actor record.'),
+        session: SessionField
+      },
+      handler: async ({ actor, session }) => {
+        try {
+          const engine = sessions.get(session);
+          return toolResult({ actor: engine.Combat.dropToZero(actor) });
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
+      name: 'combat_death_save',
+      description: 'Roll a death saving throw for an actor at 0 HP. Tracks successes/failures on the actor, handles nat-1 (two failures) and nat-20 (revived at 1 HP). Returns { d20, outcome, actor } where outcome is success|failure|stable|dead|revived|noop (noop when already stable or dead). Logged in the session\'s rollLog.',
+      input: {
+        actor: z.record(z.unknown()).describe('Actor record (deathSaves tracker is created if absent).'),
+        session: SessionField,
+        context: ContextField
+      },
+      handler: async ({ actor, session, context }) => {
+        try {
+          const engine = sessions.get(session);
+          return toolResult(engine.Combat.deathSave(actor, context));
+        } catch (err) { return toolError(err); }
+      }
     }
   ];
 }

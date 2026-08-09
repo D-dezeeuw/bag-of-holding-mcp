@@ -44,6 +44,19 @@ test('srd_dump returns every record in a registry', async () => {
   assert.ok(Object.keys(data.records).length > 0);
 });
 
+test('the monsters registry is reachable — list and get agree', async () => {
+  // The engine has shipped an SRD monsters registry for two bestiary
+  // releases; the kind enum silently excluded it, so an AI DM could
+  // look up a longsword but not the goblin holding it.
+  const { run } = setup(srdTools);
+  const list = await run('srd_list', { kind: 'monsters' });
+  assert.ok(list.data.ids.length >= 60, `expected the full bestiary, got ${list.data.ids.length}`);
+  assert.ok(list.data.ids.includes('goblin'));
+  const { data } = await run('srd_get', { kind: 'monsters', id: 'goblin' });
+  assert.equal(data.found, true);
+  assert.ok(Number.isInteger(data.record.hp));
+});
+
 test('srd_dump error path', async () => {
   const { run } = setup(srdTools);
   const r = await run('srd_dump', { kind: 'items', session: 'no' });

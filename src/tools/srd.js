@@ -1,6 +1,6 @@
-// SRD lookups — read-only access to the six content registries
+// SRD lookups — read-only access to the seven content registries
 // the engine ships: species, classes, backgrounds, feats, spells,
-// items. Plugin content added at session creation appears
+// items, monsters. Plugin content added at session creation appears
 // transparently here.
 //
 // One generic tool (`srd_get`/`srd_list`) instead of six per-
@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { toolResult, toolError } from '../_result.js';
 
 const SessionField = z.string().optional().describe('Session id; omit for default singleton.');
-const RegistryKind = z.enum(['species', 'classes', 'backgrounds', 'feats', 'spells', 'items']).describe('Which SRD registry to read.');
+const RegistryKind = z.enum(['species', 'classes', 'backgrounds', 'feats', 'spells', 'items', 'monsters']).describe('Which SRD registry to read.');
 
 export function srdTools(sessions) {
   return [
