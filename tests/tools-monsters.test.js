@@ -51,3 +51,15 @@ test('monsters_for_target_cr reports an unknown monster', async () => {
   const r = await run('monsters_for_target_cr', { monsterId: 'nope', targetCr: 10 });
   assert.equal(r.isError, true);
 });
+
+test('monsters_elevate error path (unknown session)', async () => {
+  const { run } = setup(monsterTools);
+  const r = await run('monsters_elevate', { monsterId: 'wight', tier: 'elite', session: 'no' });
+  assert.equal(r.isError, true);
+});
+
+test('monsters_for_target_cr error path (unknown session)', async () => {
+  const { run } = setup(monsterTools);
+  const r = await run('monsters_for_target_cr', { monsterId: 'wight', targetCr: 20, session: 'no' });
+  assert.equal(r.isError, true);
+});

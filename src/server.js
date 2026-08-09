@@ -25,10 +25,11 @@ import { characterTools } from './tools/character.js';
 import { srdTools } from './tools/srd.js';
 import { spellsTools } from './tools/spells.js';
 import { monsterTools } from './tools/monsters.js';
+import { restTools } from './tools/rest.js';
 import { engineTools } from './tools/engine.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.0.1';
+const SERVER_VERSION = '0.1.0';
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.
@@ -58,7 +59,8 @@ export function createServer(opts = {}) {
     ...characterTools(sessions),
     ...srdTools(sessions),
     ...spellsTools(sessions),
-    ...monsterTools(sessions)
+    ...monsterTools(sessions),
+    ...restTools(sessions)
   ];
 
   for (const tool of allTools) {
