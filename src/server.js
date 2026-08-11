@@ -18,10 +18,12 @@
 // world packs / guides (static frozen data). The campaign guides
 // are additionally registered as MCP prompts and resources.
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createSessions } from './sessions.js';
 import { createMemoryStore } from './memory/store.js';
 import { registerGuides } from './skills/guides.js';
+import { createWorlds } from './worlds.js';
+import { worldsTools } from './tools/worlds.js';
 import { diceTools } from './tools/dice.js';
 import { checksTools } from './tools/checks.js';
 import { combatTools } from './tools/combat.js';
@@ -74,9 +76,11 @@ const SERVER_VERSION = '0.3.0';
 export function createServer(opts = {}) {
   const sessions = opts.sessions ?? createSessions();
   const memory = opts.memoryStore ?? createMemoryStore(opts.memory ?? {});
+  const worlds = opts.worlds ?? createWorlds({ dir: opts.worldsDir ?? process.env.BOH_WORLDS_DIR ?? null });
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
   const allTools = [
+    ...worldsTools(worlds),
     ...engineTools(sessions),
     ...diceTools(sessions),
     ...checksTools(sessions),
@@ -101,5 +105,28 @@ export function createServer(opts = {}) {
 
   registerGuides(server);
 
-  return { server, sessions, memory, tools: allTools };
+  // The same read surface as world:// resources, so an MCP host can browse a
+  // mounted world with no tool calls at all. Node ids ride in the URI path
+  // (dots are legal there): world://world-1234/node/continent-0.province-1
+  const json = (uri, payload) => ({
+    contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(payload) }],
+  });
+  server.resource('world-catalog', 'world://catalog', async (uri) =>
+    json(uri, { worlds: worlds.list(), dir: worlds.dir, errors: worlds.errors }));
+  server.resource('world-node',
+    new ResourceTemplate('world://{world}/node/{node}', { list: undefined }),
+    async (uri, { world, node }) => {
+      const out = worlds.node(world, node);
+      if (!out) throw new Error(`unknown node '${node}' in '${world}'`);
+      return json(uri, out);
+    });
+  server.resource('world-lineage',
+    new ResourceTemplate('world://{world}/lineage/{node}', { list: undefined }),
+    async (uri, { world, node }) => {
+      const out = worlds.lineage(world, node);
+      if (!out) throw new Error(`unknown node '${node}' in '${world}'`);
+      return json(uri, { lineage: out });
+    });
+
+  return { server, sessions, memory, worlds, tools: allTools };
 }

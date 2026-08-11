@@ -47,7 +47,7 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
 }
 ```
 
-Restart Claude Desktop and the server's 84 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions — plus campaign memory, state saves, the world pack and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
+Restart Claude Desktop and the server's 90 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
 
 New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks from zero to a running campaign — setup, memory tokens, the session ritual, semantic memory, and how to audit the dice.
 
@@ -70,7 +70,8 @@ New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks fr
 | **Monster tiers** | `monsters_elevate`, `monsters_for_target_cr` |
 | **Memory** | `memory_status`, `memory_record`, `memory_search`, `memory_recent`, `memory_forget`, `memory_export`, `memory_import` |
 | **State vault** | `state_save`, `state_load`, `state_list`, `state_delete` |
-| **World** | `world_list`, `world_overview`, `world_region`, `world_faction`, `world_npc`, `world_hooks`, `world_secrets`, `world_search` |
+| **World packs** (hand-authored, read-only) | `world_list`, `world_overview`, `world_region`, `world_faction`, `world_npc`, `world_hooks`, `world_secrets`, `world_search` |
+| **World cartridges** (generated, session ledger) | `world_catalog`, `world_begin`, `world_node`, `world_lineage`, `world_commit`, `world_replay` |
 | **Guides** | `guide_list`, `guide_get` |
 
 Every engine tool accepts an optional `session` parameter; omit it to use the default (unseeded) singleton, fine for one-shot mechanic queries. For an actual campaign, always `engine_create_session({ seed: <int> })` first so rolls are reproducible.

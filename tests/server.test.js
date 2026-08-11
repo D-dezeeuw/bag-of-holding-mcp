@@ -23,7 +23,8 @@ test('createServer wires every tool module so the AI gets the full surface in on
   assert.ok(sessions);
   assert.ok(memory);
   const names = new Set(tools.map((t) => t.name));
-  assert.equal(names.size, 84, 'tool count is part of the README contract');
+  assert.equal(names.size, 90, 'tool count is part of the README contract');
+  assert.equal(names.size, tools.length, 'no two tools may share a name');
   for (const expected of [
     'engine_create_session', 'engine_get_roll_log', 'engine_verify_log',
     'dice_roll', 'dice_parse',
@@ -35,6 +36,10 @@ test('createServer wires every tool module so the AI gets the full surface in on
     'beats_validate', 'beats_thread_advance',
     'character_derive_sheet', 'character_skill_ability_map',
     'srd_list', 'srd_get', 'srd_dump',
+    // Two distinct world surfaces share the world_ prefix without colliding:
+    // generated cartridges (catalog/begin/node/lineage/commit/replay) and the
+    // hand-authored static packs (list/overview/region/faction/npc/...).
+    'world_catalog', 'world_begin', 'world_node', 'world_lineage', 'world_commit', 'world_replay',
     'memory_status', 'memory_record', 'memory_search', 'memory_recent',
     'memory_forget', 'memory_export', 'memory_import',
     'state_save', 'state_load', 'state_list', 'state_delete',
@@ -50,7 +55,7 @@ test('createServer() with no options stands up on environment defaults without t
   const { server, sessions, memory, tools } = createServer();
   assert.ok(server);
   assert.ok(sessions.get());
-  assert.equal(tools.length, 84);
+  assert.equal(tools.length, 90);
   assert.equal(typeof memory.dataDir, 'string');
 });
 
@@ -108,9 +113,13 @@ test('guides are served as MCP prompts and resources over a real client connecti
     const combat = await client.getPrompt({ name: 'run-combat', arguments: {} });
     assert.ok(combat.messages[0].content.text.includes('# Combat flow'));
 
+    // Assert on the guide resources specifically rather than a bare count —
+    // the world cartridge surface registers its own (world://catalog) and
+    // more may follow; a total-count assertion would break on every one.
     const { resources } = await client.listResources();
-    assert.equal(resources.length, 5);
-    for (const resource of resources) {
+    const guides = resources.filter((r) => r.uri.startsWith('boh://guide/'));
+    assert.equal(guides.length, 5);
+    for (const resource of guides) {
       const { contents } = await client.readResource({ uri: resource.uri });
       assert.equal(contents[0].mimeType, 'text/markdown');
       assert.ok(contents[0].text.startsWith('# '), `${resource.uri} serves markdown`);

@@ -26,5 +26,13 @@ export { createHttpHandler, listen, main } from './src/http.js';
 export { createMemoryStore, MEMORY_TYPES } from './src/memory/store.js';
 export { createEmbeddingsClient } from './src/memory/embedder.js';
 export { createQdrantClient } from './src/memory/qdrant.js';
-export { worlds, getWorld } from './src/world/index.js';
 export { GUIDES } from './src/skills/guides.js';
+// Two distinct world surfaces, deliberately both exported:
+//   `createWorlds` — generated cartridges loaded from BOH_WORLDS_DIR, played
+//     as a patch ledger over an immutable base (world_catalog/begin/...).
+//   `worlds`/`getWorld` — the hand-authored static packs compiled into this
+//     package, read-only reference content (world_list/overview/region/...).
+// Named apart (`worldPacks`) at the export boundary because both modules
+// wanted the identifier `worlds`.
+export { createWorlds } from './src/worlds.js';
+export { worlds as worldPacks, getWorld } from './src/world/index.js';
