@@ -23,7 +23,13 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { rankRecords } from './search.js';
+import { rankRecords, fuseRankings } from './search.js';
+import {
+  createEmbeddingsClient, DEFAULT_EMBEDDINGS_MODEL, DEFAULT_EMBEDDINGS_DIM
+} from './embedder.js';
+import {
+  createQdrantClient, pointId, DEFAULT_QDRANT_URL, DEFAULT_QDRANT_COLLECTION
+} from './qdrant.js';
 
 /**
  * Record types the memory log accepts. An enum (rather than
@@ -45,6 +51,46 @@ const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 
 function parseEnvHashes(raw) {
   return (raw ?? '').split(',').map((h) => h.trim()).filter(Boolean);
+}
+
+/**
+ * Resolve the semantic-search configuration, or null when disabled.
+ * Semantic memory is opt-in: it turns on when an embeddings
+ * endpoint is configured (opts or $BOH_EMBEDDINGS_URL) or when a
+ * pre-built embedder is injected (tests, embedders). The docker
+ * compose file in the repo root stands up the expected sidecars —
+ * Qwen3-Embedding-0.6B behind an OpenAI-compatible endpoint, plus
+ * Qdrant for the vectors.
+ */
+function resolveSemantic(opts) {
+  const dimRaw = Number.parseInt(process.env.BOH_EMBEDDINGS_DIM ?? '', 10);
+  const embeddings = {
+    url: opts.embeddings?.url ?? process.env.BOH_EMBEDDINGS_URL,
+    model: opts.embeddings?.model ?? process.env.BOH_EMBEDDINGS_MODEL,
+    dim: opts.embeddings?.dim ?? (Number.isInteger(dimRaw) ? dimRaw : undefined),
+    apiKey: opts.embeddings?.apiKey ?? process.env.BOH_EMBEDDINGS_API_KEY
+  };
+  if (!opts.embedder && !embeddings.url) return null;
+  return {
+    embeddings,
+    qdrant: {
+      url: opts.qdrant?.url ?? process.env.BOH_QDRANT_URL,
+      collection: opts.qdrant?.collection ?? process.env.BOH_QDRANT_COLLECTION,
+      apiKey: opts.qdrant?.apiKey ?? process.env.BOH_QDRANT_API_KEY
+    }
+  };
+}
+
+/**
+ * What gets embedded for a record: the text plus the entity names.
+ * Entities usually appear in well-written text anyway, but records
+ * that lean on the entities field alone still deserve semantic
+ * recall. Keep this composition stable — stored vectors are only
+ * re-embedded when the model or dim changes, not when this does.
+ */
+function embeddableText(record) {
+  const entities = record.entities?.length ? ` | ${record.entities.join(', ')}` : '';
+  return `${record.text}${entities}`;
 }
 
 function assertName(kind, value) {
@@ -94,6 +140,24 @@ export function createMemoryStore(opts = {}) {
       .map((h) => h.toLowerCase())
   );
   const authRequired = tokenHashes.size > 0;
+
+  // Semantic layer — lazily initialised on the first hybrid search
+  // so a configured-but-down sidecar can never block startup, and
+  // reset on failure so a restarted sidecar is picked up on the
+  // next search instead of needing a server restart.
+  const semanticCfg = resolveSemantic(opts);
+  let semanticPromise = null;
+  let semanticState = semanticCfg ? 'unloaded' : 'disabled';
+  let semanticError = null;
+  function getSemantic() {
+    semanticPromise ??= (async () => {
+      const embedder = opts.embedder ?? createEmbeddingsClient(semanticCfg.embeddings);
+      const index = opts.vectorIndex ?? createQdrantClient(semanticCfg.qdrant);
+      await index.ensureCollection(embedder.dim);
+      return { embedder, index };
+    })();
+    return semanticPromise;
+  }
 
   function namespaceFor(token) {
     if (authRequired && (typeof token !== 'string' || !tokenHashes.has(sha256(token)))) {
@@ -170,6 +234,26 @@ export function createMemoryStore(opts = {}) {
     return rec;
   }
 
+  /**
+   * Semantic-layer status without touching the sidecars: config
+   * plus the state the last search left behind ('disabled' |
+   * 'unloaded' | 'ready' | 'failed', with the failure reason).
+   */
+  function embeddingsInfo() {
+    if (!semanticCfg) return { state: 'disabled' };
+    return {
+      state: semanticState,
+      url: semanticCfg.embeddings.url ?? '(injected embedder)',
+      model: opts.embedder?.model ?? semanticCfg.embeddings.model ?? DEFAULT_EMBEDDINGS_MODEL,
+      dim: opts.embedder?.dim ?? semanticCfg.embeddings.dim ?? DEFAULT_EMBEDDINGS_DIM,
+      qdrant: {
+        url: semanticCfg.qdrant.url ?? DEFAULT_QDRANT_URL,
+        collection: semanticCfg.qdrant.collection ?? DEFAULT_QDRANT_COLLECTION
+      },
+      ...(semanticError === null ? {} : { lastError: semanticError })
+    };
+  }
+
   /** All campaigns in the token's namespace, with sizes. */
   function listCampaigns(token) {
     const ns = namespaceFor(token);
@@ -200,8 +284,19 @@ export function createMemoryStore(opts = {}) {
       return writeRecord(ns, campaign, input, ops);
     },
 
-    /** Rank the campaign's live records against a query. */
-    search(token, campaign, { query, limit = 8, type, entities } = {}) {
+    /**
+     * Rank the campaign's live records against a query.
+     *
+     * Lexical BM25 always runs. With the semantic sidecars
+     * configured the result is a hybrid: missing vectors are
+     * back-filled into Qdrant (so enabling semantics later "just
+     * works" on an old campaign), the query is embedded, and the
+     * lexical, semantic and importance/recency rankings are fused
+     * with reciprocal-rank fusion. Sidecar trouble degrades to the
+     * lexical result with `semanticError` set — quality falls back,
+     * availability doesn't.
+     */
+    async search(token, campaign, { query, limit = 8, type, entities } = {}) {
       const ns = namespaceFor(token);
       assertName('campaign', campaign);
       const all = liveRecords(loadOps(ns, campaign).ops);
@@ -213,13 +308,93 @@ export function createMemoryStore(opts = {}) {
           (r.entities ?? []).some((e) => wanted.includes(e.toLowerCase()))
         );
       }
-      const hits = rankRecords(candidates, query ?? '')
-        .slice(0, limit)
-        .map(({ index, score }) => ({
-          ...candidates[index],
-          score: Math.round(score * 10000) / 10000
-        }));
-      return { hits, searched: candidates.length, total: all.length };
+      const q = query ?? '';
+      const lexRanked = rankRecords(candidates, q);
+      const lexicalHits = lexRanked.slice(0, limit).map(({ index, score }) => ({
+        ...candidates[index],
+        score: Math.round(score * 10000) / 10000
+      }));
+      const base = { searched: candidates.length, total: all.length };
+      if (semanticState === 'disabled' || q.trim() === '' || candidates.length === 0) {
+        return { hits: lexicalHits, ...base, retrieval: 'lexical' };
+      }
+
+      try {
+        const { embedder, index } = await getSemantic();
+        const posById = new Map(candidates.map((r, i) => [r.id, i]));
+        const idFor = (r) => pointId(ns, campaign, r.id, embedder.model, embedder.dim);
+
+        // Backfill: embed and upsert any candidate Qdrant hasn't
+        // seen under this model/dim (deterministic point ids make
+        // this an idempotent set-difference, not bookkeeping).
+        const existing = await index.existingIds(candidates.map(idFor));
+        const missing = candidates.filter((r) => !existing.has(idFor(r)));
+        if (missing.length > 0) {
+          const vectors = await embedder.embedDocuments(missing.map(embeddableText));
+          await index.upsert(missing.map((r, i) => ({
+            id: idFor(r),
+            vector: vectors[i],
+            payload: { ns, campaign, rid: r.id, model: embedder.model }
+          })));
+        }
+
+        const neighbours = await index.query({
+          vector: await embedder.embedQuery(q),
+          ns,
+          campaign,
+          model: embedder.model,
+          limit: Math.max(32, limit * 4)
+        });
+        // Intersect with the live, filter-surviving candidates:
+        // Qdrant may still hold vectors for records that were since
+        // forgotten or that a type/entity filter excluded.
+        const inCandidates = neighbours.filter((n) => posById.has(n.rid));
+        // Nearest-neighbour search always returns *something*; a
+        // relevance floor keeps orthogonal noise from counting as a
+        // match. Relative to the best hit rather than absolute,
+        // because absolute cosine ranges drift across embedding
+        // models; the positive floor rejects the degenerate case
+        // where nothing relates at all.
+        const maxScore = Math.max(0, ...inCandidates.map((n) => n.score));
+        const semanticIds = inCandidates
+          .filter((n) => n.score > 0 && n.score >= maxScore * 0.6)
+          .map((n) => n.rid);
+        const lexicalIds = lexRanked.map(({ index: i }) => candidates[i].id);
+
+        // The prior (importance, then recency) only re-orders
+        // records some ranking actually matched — on its own it
+        // must never resurrect a no-match into the results.
+        const matched = new Set([...lexicalIds, ...semanticIds]);
+        const priorIds = candidates
+          .filter((r) => matched.has(r.id))
+          .sort((a, b) =>
+            (b.importance ?? 3) - (a.importance ?? 3) || posById.get(b.id) - posById.get(a.id))
+          .map((r) => r.id);
+
+        const fused = fuseRankings([
+          { ids: lexicalIds, weight: 1 },
+          { ids: semanticIds, weight: 1 },
+          { ids: priorIds, weight: 0.5 }
+        ]);
+        const byId = new Map(candidates.map((r) => [r.id, r]));
+        // Exact fused ties are practically impossible (three
+        // weighted rank lists), and if one occurs the stable sort
+        // keeps Map insertion order — lexical rank first. Still
+        // deterministic, so no explicit tie-break.
+        const hits = [...fused.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, limit)
+          .map(([id, score]) => ({ ...byId.get(id), score: Math.round(score * 10000) / 10000 }));
+        semanticState = 'ready';
+        semanticError = null;
+        return { hits, ...base, retrieval: 'hybrid' };
+      } catch (err) {
+        // Reset so a recovered sidecar is retried next search.
+        semanticPromise = null;
+        semanticState = 'failed';
+        semanticError = err.message;
+        return { hits: lexicalHits, ...base, retrieval: 'lexical', semanticError: err.message };
+      }
     },
 
     /** Newest-first slice of the log — the "session recap" read. */
@@ -231,7 +406,13 @@ export function createMemoryStore(opts = {}) {
       return { records: filtered.slice(-limit).reverse(), total: all.length };
     },
 
-    /** Tombstone a record. The log stays append-only. */
+    /**
+     * Tombstone a record. The log stays append-only. Any vector
+     * already in Qdrant is left in place on purpose: search
+     * intersects neighbours with the live record set, so a stale
+     * point can never resurface a forgotten memory, and keeping
+     * forget synchronous means it cannot fail on a down sidecar.
+     */
     forget(token, campaign, id) {
       const ns = namespaceFor(token);
       assertName('campaign', campaign);
@@ -280,9 +461,12 @@ export function createMemoryStore(opts = {}) {
         namespace: namespaceFor(token),
         dataDir,
         authRequired,
+        embeddings: embeddingsInfo(),
         campaigns: listCampaigns(token)
       };
     },
+
+    embeddingsInfo,
 
     /**
      * Save an arbitrary JSON snapshot (party records, a

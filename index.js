@@ -23,5 +23,7 @@
 export { createServer } from './src/server.js';
 export { createSessions } from './src/sessions.js';
 export { createMemoryStore, MEMORY_TYPES } from './src/memory/store.js';
+export { createEmbeddingsClient } from './src/memory/embedder.js';
+export { createQdrantClient } from './src/memory/qdrant.js';
 export { worlds, getWorld } from './src/world/index.js';
 export { GUIDES } from './src/skills/guides.js';

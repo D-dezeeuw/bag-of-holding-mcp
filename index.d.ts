@@ -96,18 +96,83 @@ export interface MemorySearchResult {
   searched: number;
   /** Live records in the campaign. */
   total: number;
+  /** Which retrieval actually ran for this call. */
+  retrieval: 'lexical' | 'hybrid';
+  /** Set when the semantic sidecars were configured but failed — search fell back to lexical. */
+  semanticError?: string;
+}
+
+/**
+ * Client for an OpenAI-compatible embeddings endpoint (TEI, Ollama,
+ * vLLM, …). Vectors come back Matryoshka-truncated to `dim` and
+ * L2-normalised.
+ */
+export interface EmbeddingsClient {
+  model: string;
+  dim: number;
+  embedDocuments(texts: string[]): Promise<Float32Array[]>;
+  embedQuery(text: string): Promise<Float32Array>;
+}
+
+export function createEmbeddingsClient(opts: {
+  url: string;
+  model?: string;
+  dim?: number;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+}): EmbeddingsClient;
+
+/**
+ * Qdrant REST client bound to one collection. Multi-tenant by
+ * payload: every point carries the token-derived namespace and
+ * every query filters on it server-side.
+ */
+export interface QdrantIndex {
+  collection: string;
+  ensureCollection(dim: number): Promise<{ created: boolean }>;
+  existingIds(ids: string[]): Promise<Set<string>>;
+  upsert(points: Array<{ id: string; vector: ArrayLike<number>; payload: Record<string, unknown> }>): Promise<{ upserted: number }>;
+  query(opts: {
+    vector: ArrayLike<number>; ns: string; campaign: string; model: string; limit: number;
+  }): Promise<Array<{ rid: string; score: number }>>;
+}
+
+export function createQdrantClient(opts?: {
+  url?: string;
+  collection?: string;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+}): QdrantIndex;
+
+/** Semantic-layer status as reported by `memory_status`. */
+export interface EmbeddingsInfo {
+  state: 'disabled' | 'unloaded' | 'ready' | 'failed';
+  url?: string;
+  model?: string;
+  dim?: number;
+  qdrant?: { url: string; collection: string };
+  lastError?: string;
 }
 
 /**
  * Configuration for the disk store. Omitted fields resolve from
- * the environment: `$BOH_DATA_DIR` (default `~/.bag-of-holding`)
- * and `$BOH_MEMORY_TOKEN_HASHES` (comma-separated SHA-256 hex —
- * when non-empty the store runs closed and only listed tokens are
- * accepted; that is the hosted-tier mode).
+ * the environment: `$BOH_DATA_DIR` (default `~/.bag-of-holding`),
+ * `$BOH_MEMORY_TOKEN_HASHES` (comma-separated SHA-256 hex — when
+ * non-empty the store runs closed and only listed tokens are
+ * accepted; that is the hosted-tier mode), and the semantic
+ * sidecars: `$BOH_EMBEDDINGS_URL` / `_MODEL` / `_DIM` / `_API_KEY`
+ * plus `$BOH_QDRANT_URL` / `_COLLECTION` / `_API_KEY`. Semantic
+ * search is enabled exactly when an embeddings url (or an injected
+ * embedder) is present; without it, search is lexical BM25.
  */
 export interface MemoryStoreOptions {
   dataDir?: string;
   tokenHashes?: string[];
+  embeddings?: { url?: string; model?: string; dim?: number; apiKey?: string };
+  qdrant?: { url?: string; collection?: string; apiKey?: string };
+  /** Pre-built clients — tests and embedders; config is ignored where these are given. */
+  embedder?: EmbeddingsClient;
+  vectorIndex?: QdrantIndex;
 }
 
 /**
@@ -123,7 +188,7 @@ export interface MemoryStore {
     token: string | undefined,
     campaign: string,
     opts?: { query?: string; limit?: number; type?: MemoryType; entities?: string[] }
-  ): MemorySearchResult;
+  ): Promise<MemorySearchResult>;
   recent(
     token: string | undefined,
     campaign: string,
@@ -139,8 +204,10 @@ export interface MemoryStore {
   campaigns(token?: string): Array<{ campaign: string; records: number; stateKeys: number }>;
   info(token?: string): {
     namespace: string; dataDir: string; authRequired: boolean;
+    embeddings: EmbeddingsInfo;
     campaigns: Array<{ campaign: string; records: number; stateKeys: number }>;
   };
+  embeddingsInfo(): EmbeddingsInfo;
   stateSave(token: string | undefined, campaign: string, key: string, data: unknown): { key: string; bytes: number };
   stateLoad(token: string | undefined, campaign: string, key: string): { key: string; data: unknown };
   stateList(token: string | undefined, campaign: string): {

@@ -49,6 +49,8 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
 
 Restart Claude Desktop and the server's 84 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions — plus campaign memory, state saves, the world pack and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
 
+New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks from zero to a running campaign — setup, memory tokens, the session ritual, semantic memory, and how to audit the dice.
+
 ## Tool inventory
 
 | Category | Tools |
@@ -97,7 +99,7 @@ During play   memory_search when a name resurfaces; world_search for canon;
 Every end     memory_record (session-summary) → state_save "party" → memory_export (backup)
 ```
 
-- **Memory** is an append-only JSONL log per campaign, searched with BM25 over text + double-weighted entities/tags, importance- and recency-nudged. Lexical on purpose: zero dependencies, no API key, offline, deterministic — and campaign nouns are exactly what lexical search is good at. The retrieval sits behind one function so a semantic backend can slot in later without changing any tool contract.
+- **Memory** is an append-only JSONL log per campaign. Search is BM25 over text + double-weighted entities/tags out of the box — zero dependencies, offline, deterministic. Stand up the two sidecars in [`docker-compose.yml`](docker-compose.yml) (Qwen3-Embedding-0.6B behind an OpenAI-compatible endpoint + Qdrant) and the same tool turns **hybrid**: lexical, semantic and importance/recency rankings fused with reciprocal-rank fusion, so "the smuggler kid with the ledger" finds Tally without her name. Sidecars down? Search degrades to lexical on its own and says so (`retrieval` / `semanticError` in the result).
 - **State** is a set of named JSON checkpoints per campaign (party records, a `Session.serialize()` payload, trackers). Memory remembers the story; state remembers the numbers.
 - **Worlds** are static, deep-frozen packs. Public layer by default; `layer: "gm"` (and `world_secrets`) is spoiler material the model is instructed to reveal only through play.
 - **Guides** ship identically as prompts, resources (`boh://guide/<id>`) and tools, because host support varies.
@@ -112,6 +114,28 @@ BOH_MEMORY_TOKEN_HASHES=<sha256>,<sha256> # optional: closed mode
 ```
 
 With `BOH_MEMORY_TOKEN_HASHES` set the store runs **closed**: only tokens hashing into the list are accepted. That's the entire auth story for a future hosted tier — a billing site mints random tokens, stores only hashes, and feeds them to this same server over an HTTP transport. Design and roadmap: [docs/implementation-long-campaign.md](docs/implementation-long-campaign.md).
+
+### Semantic memory (optional sidecars)
+
+```bash
+docker compose up -d                       # Qdrant + Qwen3-Embedding-0.6B (TEI)
+export BOH_EMBEDDINGS_URL=http://localhost:8080/v1
+export BOH_QDRANT_URL=http://localhost:6333
+```
+
+`memory_search` is now hybrid; `memory_status` reports the semantic state. Full knob list — every one optional:
+
+```bash
+BOH_EMBEDDINGS_URL=http://localhost:8080/v1  # OpenAI-compatible /embeddings base; enables semantic search
+BOH_EMBEDDINGS_MODEL=Qwen/Qwen3-Embedding-0.6B
+BOH_EMBEDDINGS_DIM=256                       # Matryoshka truncation, applied client-side
+BOH_EMBEDDINGS_API_KEY=                      # bearer, if your endpoint wants one
+BOH_QDRANT_URL=http://localhost:6333
+BOH_QDRANT_COLLECTION=boh-memory
+BOH_QDRANT_API_KEY=
+```
+
+Multi-tenant by construction: one Qdrant collection, every point tagged with the token-derived namespace (`ns`, a tenant-marked index), every query filtered on it server-side. Raw tokens never reach the sidecars. Vectors back-fill lazily — enable the sidecars mid-campaign and the next search embeds the backlog on its own; forgotten records can never resurface because results are intersected with the live log.
 
 ## Embedding in your own host
 
@@ -137,7 +161,7 @@ Since 0.2.0 the server does provide persistent narrative memory, mechanical chec
 - Map state or positioning.
 - Encounter design or DM judgment — the guides coach the model; the calls stay the model's.
 - Enforced voice consistency — `memory_search` makes consistency *possible*; the model still has to ask.
-- Semantic (vector) retrieval — memory search is lexical BM25 by design for now; the interface is built to swap a vector backend in later ([why](docs/implementation-long-campaign.md)).
+- Semantic retrieval without the sidecars — the base server searches lexically (BM25); meaning-based recall needs the [docker sidecars](#semantic-memory-optional-sidecars) up.
 - Automatic recording — nothing is remembered unless the model (or you) calls `memory_record`. The end-of-session ritual in the quickstart guide is what makes a campaign durable.
 
 The engine is the math; the MCP is the wire plus the campaign's filing cabinet; the judgment is yours.

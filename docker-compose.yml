@@ -1,0 +1,51 @@
+# Semantic-memory sidecars for bag-of-holding-mcp.
+#
+#   docker compose up -d
+#   export BOH_EMBEDDINGS_URL=http://localhost:8080/v1
+#   export BOH_QDRANT_URL=http://localhost:6333
+#
+# …and memory_search turns hybrid (lexical BM25 + Qwen3 embeddings
+# fused via Qdrant). Stop the containers and search degrades back to
+# lexical on its own — the server treats the sidecars as optional.
+#
+# Multi-tenancy: one Qdrant collection serves every tenant; points
+# carry the token-derived namespace in their payload (`ns`, a
+# tenant-marked keyword index) and every query filters on it
+# server-side. Raw tokens never reach either container.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.1
+    ports:
+      - "6333:6333"           # REST (the server uses this one)
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    # Hosting this for strangers? Set an API key and pass it to the
+    # server as BOH_QDRANT_API_KEY:
+    #   environment:
+    #     QDRANT__SERVICE__API_KEY: <random>
+    restart: unless-stopped
+
+  embeddings:
+    # Text Embeddings Inference serving Qwen3-Embedding-0.6B with an
+    # OpenAI-compatible /v1/embeddings route. CPU image; on a CUDA
+    # box switch to the GPU image (same tag scheme without `cpu-`)
+    # and add the nvidia runtime. Qwen3 needs TEI >= 1.8.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    command: --model-id Qwen/Qwen3-Embedding-0.6B --auto-truncate
+    ports:
+      - "8080:80"
+    volumes:
+      - hf_cache:/data        # model downloads once, then cached
+    restart: unless-stopped
+
+  # Prefer Ollama? Replace `embeddings` with an ollama container,
+  # `ollama pull` a Qwen3 embedding model, and point the server at
+  # its OpenAI route instead:
+  #   BOH_EMBEDDINGS_URL=http://localhost:11434/v1
+  #   BOH_EMBEDDINGS_MODEL=<the tag you pulled>
+  # The server only assumes "OpenAI-compatible /embeddings".
+
+volumes:
+  qdrant_storage:
+  hf_cache:

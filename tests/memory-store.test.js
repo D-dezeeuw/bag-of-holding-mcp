@@ -20,7 +20,7 @@ after(() => {
 
 const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 
-test('record → search round-trips a memory with entities, tags and importance', () => {
+test('record → search round-trips a memory with entities, tags and importance', async () => {
   const { store } = mkStore();
   const rec = store.record(undefined, 'fen', {
     type: 'npc',
@@ -31,48 +31,52 @@ test('record → search round-trips a memory with entities, tags and importance'
   });
   assert.equal(rec.id, 'm-1');
   assert.ok(Number.isInteger(rec.ts));
-  const { hits, searched, total } = store.search(undefined, 'fen', { query: 'maela shard' });
+  const { hits, searched, total, retrieval } = await store.search(undefined, 'fen', { query: 'maela shard' });
   assert.equal(total, 1);
   assert.equal(searched, 1);
+  assert.equal(retrieval, 'lexical');
   assert.equal(hits[0].id, 'm-1');
   assert.ok(hits[0].score > 0);
 });
 
-test('empty campaigns read as empty, not as errors', () => {
+test('empty campaigns read as empty, not as errors', async () => {
   const { store } = mkStore();
-  assert.deepEqual(store.search(undefined, 'nothing', { query: 'x' }), { hits: [], searched: 0, total: 0 });
+  assert.deepEqual(
+    await store.search(undefined, 'nothing', { query: 'x' }),
+    { hits: [], searched: 0, total: 0, retrieval: 'lexical' }
+  );
   assert.deepEqual(store.recent(undefined, 'nothing'), { records: [], total: 0 });
   assert.deepEqual(store.campaigns(undefined), []);
   assert.deepEqual(store.stateList(undefined, 'nothing'), { keys: [] });
 });
 
-test('nothing touches the disk until the first write', () => {
+test('nothing touches the disk until the first write', async () => {
   const { store, dir } = mkStore();
-  store.search(undefined, 'ghost', { query: 'x' });
+  await store.search(undefined, 'ghost', { query: 'x' });
   store.info(undefined);
   assert.deepEqual(fs.readdirSync(dir), []);
   store.record(undefined, 'real', { type: 'note', text: 'first write' });
   assert.deepEqual(fs.readdirSync(dir), ['local']);
 });
 
-test('search filters by type and by entity (case-insensitive; entity-less records excluded)', () => {
+test('search filters by type and by entity (case-insensitive; entity-less records excluded)', async () => {
   const { store } = mkStore();
   store.record(undefined, 'fen', { type: 'npc', text: 'Tally keeps the books', entities: ['Tally'] });
   store.record(undefined, 'fen', { type: 'event', text: 'Tally hid the books in a cellar', entities: ['Tally'] });
   store.record(undefined, 'fen', { type: 'event', text: 'the books were mentioned at the market' });
-  const byType = store.search(undefined, 'fen', { query: 'books', type: 'event' });
+  const byType = await store.search(undefined, 'fen', { query: 'books', type: 'event' });
   assert.deepEqual(byType.hits.map((h) => h.id).sort(), ['m-2', 'm-3']);
   assert.equal(byType.searched, 2);
-  const byEntity = store.search(undefined, 'fen', { query: 'books', entities: ['tally'] });
+  const byEntity = await store.search(undefined, 'fen', { query: 'books', entities: ['tally'] });
   assert.deepEqual(byEntity.hits.map((h) => h.id).sort(), ['m-1', 'm-2']);
-  const byLimit = store.search(undefined, 'fen', { query: 'books', limit: 1 });
+  const byLimit = await store.search(undefined, 'fen', { query: 'books', limit: 1 });
   assert.equal(byLimit.hits.length, 1);
 });
 
-test('search with no query matches nothing rather than everything', () => {
+test('search with no query matches nothing rather than everything', async () => {
   const { store } = mkStore();
   store.record(undefined, 'fen', { type: 'note', text: 'quiet day' });
-  assert.deepEqual(store.search(undefined, 'fen', {}).hits, []);
+  assert.deepEqual((await store.search(undefined, 'fen', {})).hits, []);
 });
 
 test('recent returns newest first, honours limit and type filter', () => {
@@ -87,12 +91,12 @@ test('recent returns newest first, honours limit and type filter', () => {
   );
 });
 
-test('forget tombstones without rewriting history; double-forget and unknown ids throw', () => {
+test('forget tombstones without rewriting history; double-forget and unknown ids throw', async () => {
   const { store, dir } = mkStore();
   store.record(undefined, 'fen', { type: 'note', text: 'wrong fact', entities: ['Brine'] });
   store.record(undefined, 'fen', { type: 'note', text: 'right fact', entities: ['Brine'] });
   assert.deepEqual(store.forget(undefined, 'fen', 'm-1'), { forgotten: 'm-1' });
-  assert.deepEqual(store.search(undefined, 'fen', { query: 'fact brine' }).hits.map((h) => h.id), ['m-2']);
+  assert.deepEqual((await store.search(undefined, 'fen', { query: 'fact brine' })).hits.map((h) => h.id), ['m-2']);
   // Append-only on disk: 3 lines (2 records + 1 tombstone).
   const raw = fs.readFileSync(path.join(dir, 'local', 'fen', 'memory.jsonl'), 'utf8').trim().split('\n');
   assert.equal(raw.length, 3);
@@ -157,7 +161,7 @@ test('campaign names and state keys are traversal-proof', () => {
   assert.throws(() => store.stateSave(undefined, 'fen', '../key', { a: 1 }), /Invalid state key/);
 });
 
-test('tokens namespace storage; the raw token never appears on disk', () => {
+test('tokens namespace storage; the raw token never appears on disk', async () => {
   const { store, dir } = mkStore();
   const token = 'super-secret-token-string';
   store.record(token, 'fen', { type: 'note', text: 'alpha world' });
@@ -166,8 +170,8 @@ test('tokens namespace storage; the raw token never appears on disk', () => {
   // Empty-string token means "no token" → local namespace.
   assert.equal(store.recent('', 'fen').total, 1);
 
-  assert.equal(store.search(token, 'fen', { query: 'alpha' }).total, 1);
-  assert.equal(store.search(token, 'fen', { query: 'beta' }).hits.length, 0);
+  assert.equal((await store.search(token, 'fen', { query: 'alpha' })).total, 1);
+  assert.equal((await store.search(token, 'fen', { query: 'beta' })).hits.length, 0);
   assert.deepEqual(store.campaigns(token), [{ campaign: 'fen', records: 1, stateKeys: 0 }]);
 
   const namespaces = fs.readdirSync(dir);

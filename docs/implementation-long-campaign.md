@@ -22,32 +22,49 @@ The engine's contract ("the host owns the prose, the persistence, and
 the AI loop") anticipated exactly this: the MCP server *is* the host's
 persistence layer. Two deliberate deviations from the ask as phrased:
 
-### Deviation 1 — lexical retrieval first, vectors behind an interface
+### Deviation 1 — lexical core, semantic sidecars (revised: implemented)
 
-A true vector database needs embeddings, and embeddings need an
-embedding model. Putting that in this server means an API key, network
-calls, per-call cost, and a provider dependency — in the one layer of
-the stack that is currently key-free, offline, deterministic, and
-auditable. It would also make the *memory* of the campaign
-non-replayable: the same query against the same store could return
-different neighbours as embedding models version.
+*As originally assessed*, embeddings don't belong inside this server:
+an in-process model would drag heavyweight dependencies into a
+zero-dep package, and a cloud API would put a key and a provider in
+the one layer that is key-free and auditable. The revision that
+resolved the tension: **local sidecar containers**, per the project's
+own infrastructure plan — Qdrant for vectors and Qwen3-Embedding-0.6B
+behind Text Embeddings Inference, both in `docker-compose.yml`, both
+spoken to over plain REST with the platform `fetch`. No new npm
+dependencies; no cloud; no keys leaving the machine.
 
-Campaign memory is also an unusually easy retrieval problem. The
-things a DM needs back — NPC names, places, factions, quest nouns —
-are distinctive tokens, exactly where lexical search is strongest.
+How it lands:
 
-So v1 ships **structured records + BM25 + importance/recency
-weighting**, zero new dependencies, fully offline:
-
-- Records carry `type`, `entities`, `tags`, `importance` (1–5), and
-  position (recency) — the search blends all of them, so retrieval is
-  meaningfully better than grep even before semantics.
-- The retrieval lives behind one function with a stable tool contract
-  (`memory_search` in → scored records out). A vector backend (local
-  embeddings or the hosted tier) can replace it *later* without any
-  tool-surface change. That is the honest meaning of "set up a vector
-  database": design for it, don't ship the infrastructure before a
-  campaign exists that outgrows BM25 (~tens of thousands of records).
+- **Lexical BM25 stays the base.** Records carry `type`, `entities`,
+  `tags`, `importance` (1–5) and position (recency); with no sidecars
+  configured, search works exactly as before, offline, deterministic.
+- **Hybrid when the sidecars are up** (`$BOH_EMBEDDINGS_URL` set):
+  lexical, semantic and importance/recency rankings are merged with
+  reciprocal-rank fusion (k = 60) — scale-free, so BM25 floats and
+  cosine scores never need reconciling. A relevance floor (positive
+  score, ≥ 0.6 × best hit) keeps nearest-neighbour noise from
+  counting as a match.
+- **Lazy backfill.** Vectors are written at *search* time, not record
+  time: deterministic point ids make "what's missing" a set
+  difference, so enabling semantics mid-campaign embeds the backlog
+  on the next search, and `memory_record` can never fail on a down
+  sidecar.
+- **Multi-tenant via Qdrant's own pattern.** One collection; every
+  point's payload carries the token-derived namespace (`ns`) as a
+  tenant-marked keyword index plus `campaign` and `model`; every
+  query filters on all three server-side. Raw tokens never reach the
+  sidecars, and results are intersected with the live record set so
+  forgotten records and stale vectors can never resurface.
+- **Degrade, don't fail.** Any sidecar error returns the lexical
+  result with `retrieval: "lexical"` and `semanticError` set; the
+  next search retries, so a restarted container heals without a
+  server restart. `memory_status` reports the whole semantic state.
+- **The embedding client is generic** (OpenAI-compatible
+  `/embeddings` — TEI, Ollama, vLLM, LM Studio all qualify), queries
+  get the Qwen instruction prefix client-side, and vectors are
+  Matryoshka-truncated (default 256 of 1024 dims) then re-normalised
+  client-side, so the stack stays swappable.
 
 ### Deviation 2 — the provided token was not embedded
 
@@ -199,14 +216,18 @@ Repo contract is 100/100/100 line/branch/function coverage plus
 
 ## Follow-ups (explicitly out of this PR)
 
-- **Vector backend** behind `memory_search` (hosted tier or local
-  embeddings) once a real campaign outgrows BM25.
 - **Solo/Session orchestrator tools** — the engine's
   `Session.create/serialize/restore` and `Replay.share` are not yet
   exposed as MCP tools; `state_save`/`state_load` already store their
   payloads, so this is a natural next surface.
 - **Memory compaction** via MCP sampling (ask the *host* model to
-  summarise old records — keeps the server model-free).
+  summarise old records — keeps the server model-free), plus pruning
+  of stale Qdrant points left behind by `memory_forget` (harmless
+  today thanks to live-set intersection, but they accumulate).
+- **World-pack semantic search** — `world_search` is lexical only;
+  embedding the packs through the same sidecars is mechanical now.
 - **More worlds** — Brassgear and Hollow Vale slices, once the engine's
   `3.3.0` setting plugin contract exists to share shapes with.
-- **HTTP transport + billing** for the hosted tier.
+- **HTTP transport + billing** for the hosted tier — the token-hash
+  allowlist, tenant namespacing and Qdrant isolation are already the
+  shapes that tier needs.

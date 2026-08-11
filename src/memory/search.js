@@ -100,3 +100,22 @@ export function rankRecords(records, query) {
   ranked.sort((a, b) => b.score - a.score || b.index - a.index);
   return ranked;
 }
+
+/**
+ * Reciprocal-rank fusion: merge several rankings of ids into one
+ * score map without having to reconcile their score scales (BM25
+ * floats vs cosine similarities vs a plain priority order). The
+ * standard k=60 damping keeps any single ranking from dominating.
+ *
+ * Returns `Map<id, score>` for every id that appears in at least
+ * one ranking; the caller decides ordering and tie-breaks.
+ */
+export function fuseRankings(rankings, k = 60) {
+  const scores = new Map();
+  for (const { ids, weight } of rankings) {
+    ids.forEach((id, rank) => {
+      scores.set(id, (scores.get(id) ?? 0) + weight / (k + rank + 1));
+    });
+  }
+  return scores;
+}

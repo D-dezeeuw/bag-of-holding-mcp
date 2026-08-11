@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tokenize, rankRecords } from '../src/memory/search.js';
+import { tokenize, rankRecords, fuseRankings } from '../src/memory/search.js';
 
 test('tokenize lowercases, strips stopwords and single chars, keeps digit-bearing tokens', () => {
   assert.deepEqual(
@@ -64,4 +64,20 @@ test('a single-record corpus ranks with full recency and default importance', ()
   const ranked = rankRecords([{ text: 'the bell rang thirteen times' }], 'bell thirteen');
   assert.equal(ranked.length, 1);
   assert.ok(ranked[0].score > 0);
+});
+
+test('fuseRankings merges rankings scale-free: agreement wins, weights matter, absentees stay absent', () => {
+  const fused = fuseRankings([
+    { ids: ['a', 'b', 'c'], weight: 1 },   // lexical order
+    { ids: ['b', 'a'], weight: 1 },        // semantic order — no c
+    { ids: ['c', 'b', 'a'], weight: 0.5 }  // prior
+  ]);
+  // b: 1/62 + 1/61 + 0.5/62 ≈ 0.0364 — top ranks in both main lists.
+  // a: 1/61 + 1/62 + 0.5/63 ≈ 0.0355; c: 1/63 + 0.5/61 ≈ 0.0241.
+  const order = [...fused.entries()].sort((x, y) => y[1] - x[1]).map(([id]) => id);
+  assert.deepEqual(order, ['b', 'a', 'c']);
+  assert.equal(fused.has('d'), false);
+  // The damping constant is overridable.
+  const tight = fuseRankings([{ ids: ['a'], weight: 1 }], 0);
+  assert.equal(tight.get('a'), 1);
 });

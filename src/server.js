@@ -52,12 +52,14 @@ const SERVER_VERSION = '0.2.0';
  *
  * @param {{
  *   sessions?: ReturnType<typeof createSessions>,
- *   memory?: { dataDir?: string, tokenHashes?: string[] }
+ *   memory?: import('../index.js').MemoryStoreOptions
  * }} [opts]
  *   `sessions` injects a shared session registry (rare — usually
  *   you want the default fresh one). `memory` configures the disk
- *   store; omitted, it resolves via $BOH_DATA_DIR /
- *   $BOH_MEMORY_TOKEN_HASHES and finally ~/.bag-of-holding.
+ *   store and the optional semantic sidecars (embeddings endpoint +
+ *   Qdrant); omitted, everything resolves from the environment
+ *   (BOH_DATA_DIR, BOH_MEMORY_TOKEN_HASHES, BOH_EMBEDDINGS_*,
+ *   BOH_QDRANT_*) with ~/.bag-of-holding as the default root.
  */
 export function createServer(opts = {}) {
   const sessions = opts.sessions ?? createSessions();

@@ -38,7 +38,7 @@ export function memoryTools(store) {
   return [
     {
       name: 'memory_status',
-      description: 'Orient yourself: which namespace this token maps to, where data lives on disk, whether the server requires tokens, and every campaign in the namespace with record/state counts. Call this once at the start of a session before recording.',
+      description: 'Orient yourself: which namespace this token maps to, where data lives on disk, whether the server requires tokens, the semantic-search state (embeddings sidecar + Qdrant, or lexical-only), and every campaign in the namespace with record/state counts. Call this once at the start of a session before recording.',
       input: { token: TokenField },
       handler: async ({ token }) => {
         try {
@@ -66,7 +66,7 @@ export function memoryTools(store) {
     },
     {
       name: 'memory_search',
-      description: 'Query the campaign log (BM25 over text, entities and tags double-weighted, importance and recency break ties). Call it whenever a name resurfaces, a scene opens in a known place, or before improvising a fact you might have already established. Empty hits honestly means the log has nothing — do not invent a memory.',
+      description: 'Query the campaign log. Lexical BM25 always runs (entities and tags double-weighted); with the semantic sidecars up (Qwen embeddings + Qdrant, see memory_status) results are hybrid — the `retrieval` field says which you got, and paraphrased queries ("the smuggler kid with the ledger") then work as well as exact names. Call it whenever a name resurfaces, a scene opens in a known place, or before improvising a fact you might have already established. Empty hits honestly means the log has nothing — do not invent a memory.',
       input: {
         token: TokenField,
         campaign: CampaignField,
@@ -77,7 +77,7 @@ export function memoryTools(store) {
       },
       handler: async ({ token, campaign, ...query }) => {
         try {
-          return toolResult(store.search(token, campaign, query));
+          return toolResult(await store.search(token, campaign, query));
         } catch (err) { return toolError(err); }
       }
     },
