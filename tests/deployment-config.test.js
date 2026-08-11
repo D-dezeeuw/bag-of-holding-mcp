@@ -78,6 +78,20 @@ test('only the embedding server has egress, and only because it downloads a mode
   assert.ok(!qdrantBlock.includes('boh-egress'), 'qdrant must not have egress');
 });
 
+test('no service is handed an empty-string Qdrant api key', () => {
+  // `QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}` always DEFINES the
+  // variable — as "" when unset. Qdrant reads that as "auth configured" and
+  // 401s every request, including from the server sharing the same value,
+  // and blanking the .env line does not help because the variable is still
+  // defined. Absent is the only spelling of "off". If the key is ever
+  // re-enabled it must use ${QDRANT_API_KEY} with no `:-` default, so an
+  // unset variable is a loud compose error instead of a silent lockout.
+  const active = compose.split('\n').filter((l) => !l.trim().startsWith('#'));
+  for (const line of active) {
+    assert.doesNotMatch(line, /API_KEY:\s*\$\{[A-Z_]+:-\}/, `empty-defaulted api key: ${line.trim()}`);
+  }
+});
+
 test('the required auth variable has no default, so a misconfigured deploy fails closed', () => {
   // `:?` (error if unset) rather than `:-` (fall back). With a default this
   // would boot with an empty allowlist.

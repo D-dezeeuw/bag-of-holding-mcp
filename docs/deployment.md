@@ -166,16 +166,27 @@ If `OOMKilled` is `false`, read `docker logs bag-of-holding-mcp-embeddings`
 instead — a DNS resolution error there means the container lost its egress
 network (see above), not that the host's network is broken.
 
-### QDRANT_API_KEY is optional
+### Qdrant runs without an api key, on purpose
 
-It lives in `.env` and defaults to empty. Qdrant sits on `internal: true`
-with no route off-host, so the key protects an endpoint nothing off-box can
-reach — leaving it blank is a reasonable choice, and setting it costs
-nothing either since the same value reaches both containers
-(`QDRANT__SERVICE__API_KEY` on Qdrant, `BOH_QDRANT_API_KEY` on the server).
-Set it if you ever move Qdrant onto a routable network. To turn it off:
-blank the line in `.env` and redeploy — Qdrant reads it at start, so the
-requirement drops when the container restarts.
+The variable is not wired into `docker-compose.yml` at all, and that is the
+fix for a genuinely nasty failure mode rather than laziness.
+
+`QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}` always **defines** the
+variable — as `""` when `QDRANT_API_KEY` is unset. Qdrant reads a
+defined-but-empty `api_key` as *auth is configured* and enforces a key that
+no request can match, so **every** call 401s, including from the server
+holding the identical value. Blanking the line in `.env` does not help: the
+variable is still defined. Only removing it means "off".
+
+Running without costs nothing here — Qdrant has no gateway and no published
+ports, so 6333 is unreachable from off-host.
+
+To enable one: uncomment the two commented lines in `docker-compose.yml`
+(the `qdrant` service **and** the `mcp` service — they must move together)
+and set a fresh value in `.env`. Note they use `${QDRANT_API_KEY}` with no
+`:-` default, so an unset variable becomes a loud compose error instead of a
+silent lockout. Generate it with `openssl rand -hex 32`; don't reuse another
+system's secret.
 
 ### Backups
 
