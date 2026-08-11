@@ -9,13 +9,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY package.json ./
-# Promote the engine from a dev link (file:../bag-of-holding, which only
-# exists in a side-by-side checkout) to a real dependency fetched from
-# source. --omit=dev then drops typescript and the rest of the dev tree.
-RUN npm pkg set "dependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main" \
-    && npm pkg delete devDependencies \
+# Promote BOTH sibling packages from dev links (file:../…, which only exist in
+# a side-by-side checkout) to real dependencies fetched from source.
+#
+# ORDER IS LOAD-BEARING — delete the peer ranges BEFORE setting the deps.
+#
+# Two separate traps, and the second one is silent:
+#
+#   1. npm 7+ installs unsatisfied peers from the REGISTRY, and both ranges
+#      deliberately point ahead of what is published (engine peer ^2.5.0 vs
+#      2.1.0 on npm; client peer ^0.8.0 vs 0.4.0). Left in place they fail the
+#      build with ETARGET while the correct code sits in the dependency map.
+#   2. `npm pkg set dependencies.X=<git spec>` does NOT stick while X is still
+#      listed as a peer: a later `npm pkg` call re-reads the file, normalises
+#      the dep against the peer, and rewrites the git spec back to the peer's
+#      semver range. The set appears to succeed and the failure surfaces later
+#      as ETARGET on a range you thought you had replaced.
+#
+# The peer ranges still document intent for consumers installing from npm;
+# they simply have nothing to say inside an image pinned to source.
+RUN npm pkg delete peerDependencies devDependencies \
+    && npm pkg set "dependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main" \
+    && npm pkg set "dependencies.@zeeuw/bag-of-holding-client"="github:D-dezeeuw/bag-of-holding-client#main" \
+    && node -e "const d=require('/build/package.json').dependencies; for (const k of ['@zeeuw/bag-of-holding','@zeeuw/bag-of-holding-client']) if (!d[k].startsWith('github:')) { console.error('FATAL: '+k+' is '+d[k]+', expected a github: spec — peer normalisation clobbered it'); process.exit(1); }" \
     && npm install --omit=dev --no-package-lock --no-audit --no-fund \
-    && node -p "'engine ' + JSON.parse(require('fs').readFileSync('node_modules/@zeeuw/bag-of-holding/package.json')).version + ' installed from source'"
+    && node -p "'engine ' + JSON.parse(require('fs').readFileSync('node_modules/@zeeuw/bag-of-holding/package.json')).version + ', client ' + JSON.parse(require('fs').readFileSync('node_modules/@zeeuw/bag-of-holding-client/package.json')).version + ' installed from source'"
 
 # ---------- runtime ----------
 FROM node:22-slim

@@ -43,12 +43,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      # Same reasoning as ci.yml: the engine peer is unpublished at the
-      # version this server targets, so resolve it from source rather than
-      # the registry. The image does the same thing in its builder stage.
-      - name: Install with the engine from source
+      # Same reasoning as ci.yml: both sibling peers are unpublished at the
+      # versions this server targets (engine ^2.5.0 vs 2.1.0 on npm, client
+      # ^0.10.0 vs 0.4.0), so resolve them from source rather than the
+      # registry. Keep this list in step with ci.yml — omitting one makes
+      # `npm install` fall back to the registry for that peer and fail with
+      # ETARGET. The image's builder stage does the same thing.
+      - name: Install with the engine and client from source
         run: |
           npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main"
+          npm pkg set "devDependencies.@zeeuw/bag-of-holding-client"="github:D-dezeeuw/bag-of-holding-client#main"
           npm install --no-package-lock
       - run: npm test
       - run: npm run typecheck
