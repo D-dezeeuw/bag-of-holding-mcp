@@ -42,7 +42,7 @@ import { worldTools } from './tools/world.js';
 import { guideTools } from './tools/guides.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.3.2';
+const SERVER_VERSION = '0.3.3';
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.

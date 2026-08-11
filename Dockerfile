@@ -5,7 +5,16 @@ FROM node:22-slim AS builder
 # package.json's peer range asks for ^2.5.0), so resolving from the
 # registry would pin the image to a version this server predates.
 # Same reasoning as .github/workflows/ci.yml's install step.
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+#
+# ca-certificates is NOT optional here, and its absence is deceptive.
+# node:22-slim ships no system CA bundle, so `git fetch https://…` dies with
+#   fatal: server certificate verification failed. CAfile: none CRLfile: none
+# while npm itself keeps working perfectly — npm verifies TLS against Node's
+# BUILT-IN root certificates, git against the system store via libcurl. That
+# split is why the registry was always reachable (it answered with ETARGET)
+# yet every git dependency failed: two different trust stores, only one of
+# them present.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY package.json ./
