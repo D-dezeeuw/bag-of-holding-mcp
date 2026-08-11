@@ -70,8 +70,11 @@ test('big batches split into service-sized requests, order preserved via the ind
   const client = createEmbeddingsClient({ url: 'http://x/v1', dim: 2, fetchImpl });
   const texts = Array.from({ length: 33 }, (_, i) => 'x'.repeat(i + 1));
   const vectors = await client.embedDocuments(texts);
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].body.input.length, 32);
+  // 8 per request (paired with the server's --max-batch-tokens ceiling),
+  // so 33 documents become 5 requests: 8+8+8+8+1.
+  assert.equal(calls.length, 5);
+  assert.equal(calls[0].body.input.length, 8);
+  assert.equal(calls.at(-1).body.input.length, 1);
   assert.equal(vectors.length, 33);
   // First vector corresponds to the 1-char text despite the reversal.
   assert.ok(vectors[0][0] < vectors[32][0]);
