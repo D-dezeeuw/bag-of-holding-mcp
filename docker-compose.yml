@@ -1,4 +1,4 @@
-name: bag-of-holding
+name: bag-of-holding-mcp
 
 # Three containers, two networks, one public surface.
 #
@@ -7,6 +7,17 @@ name: bag-of-holding
 #   boh-internal (internal: true) ─────────────┤
 #                                              ├── qdrant     (no public route)
 #                                              └── embeddings (no public route)
+#
+# Naming rule, and it is load-bearing: the project name and every
+# container_name share the `bag-of-holding-mcp` prefix, because
+# docker/deploy.sh force-removes containers matching `^<project>-` that
+# belong to a different compose project (its stray sweep) and passes
+# `--remove-orphans`. A vaguer project name — `bag-of-holding`, say — would
+# make this stack's deploy delete containers belonging to any other stack
+# sharing that prefix, and the sibling engine repo is literally called
+# bag-of-holding. If you ever containerise that one, give it a project name
+# that is NOT a prefix of this one (`bag-of-holding-engine`, not
+# `bag-of-holding`), or its deploys will reap these containers.
 #
 # Only `mcp` joins the proxy network, so Qdrant and the embedding
 # service are unreachable from off-host by construction — `internal: true`
@@ -23,7 +34,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: bag-of-holding-mcp
+    container_name: bag-of-holding-mcp-server
     environment:
       BOH_HTTP_PORT: "8091"
       BOH_DATA_DIR: /data
@@ -70,7 +81,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15.1
-    container_name: bag-of-holding-qdrant
+    container_name: bag-of-holding-mcp-qdrant
     environment:
       # Optional even here: the container has no route off-host. Set it
       # anyway if you ever attach this to a routable network.
@@ -94,7 +105,7 @@ services:
     # not run on Hetzner's ARM (CAX) instances, so keep this stack on a
     # CX/CPX box. Qwen3 needs TEI >= 1.8.
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
-    container_name: bag-of-holding-embeddings
+    container_name: bag-of-holding-mcp-embeddings
     command: --model-id ${BOH_EMBEDDINGS_MODEL:-Qwen/Qwen3-Embedding-0.6B} --auto-truncate
     volumes:
       - boh-hf-cache:/data        # model downloads once, then cached

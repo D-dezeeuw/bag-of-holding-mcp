@@ -118,8 +118,16 @@ done
 echo "==> start fresh instances (+ drop in-project orphans)"
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
-echo "==> prune dangling images"
-docker image prune -f
+# Scoped to THIS project's images, never host-wide. A bare
+# `docker image prune -f` reaps every dangling image on the box, which on a
+# shared host means deleting other apps' rollback targets (and racing their
+# in-flight builds) as a side effect of deploying this one. Compose-built
+# images carry the project label; the app's Dockerfile sets it explicitly so
+# the filter still matches after the tag moves to the new build. If the label
+# is ever absent the filter simply matches nothing — the safe failure is "no
+# cleanup", not "cleaned up someone else's".
+echo "==> prune this project's dangling images"
+docker image prune -f --filter "label=com.docker.compose.project=$PROJECT"
 
 echo "==> status"
 docker compose -f "$COMPOSE_FILE" ps

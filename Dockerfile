@@ -23,6 +23,10 @@ FROM node:22-slim
 # internet-facing surface and owns a data volume, so it should not share
 # an identity with anything else that might land on this host.
 RUN groupadd -g 10101 boh && useradd -m -u 10101 -g boh boh
+# Must match `name:` in docker-compose.yml. docker/deploy.sh prunes dangling
+# images filtered on this label rather than host-wide, so without it a deploy
+# would leave every superseded build of this app on disk forever.
+LABEL com.docker.compose.project="bag-of-holding-mcp"
 WORKDIR /srv
 COPY --from=builder /build/node_modules ./node_modules
 # Runtime files only — tests, docs, compose and the Dockerfile itself stay

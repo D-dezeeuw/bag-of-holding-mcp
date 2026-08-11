@@ -10,12 +10,15 @@ and two sidecars.
 
 ```
 nginx-proxy-manager_default (external, 172.22.0.0/16)
-  └── bag-of-holding-mcp   172.22.0.44:8091   ← NPM proxies the hostname here
+  └── bag-of-holding-mcp-server   172.22.0.44:8091  ← NPM proxies the hostname here
                 │
 boh-internal (internal: true — no gateway, no route off-host)
-  ├── bag-of-holding-qdrant        vectors
-  └── bag-of-holding-embeddings    Qwen3-Embedding-0.6B via TEI
+  ├── bag-of-holding-mcp-qdrant       vectors
+  └── bag-of-holding-mcp-embeddings   Qwen3-Embedding-0.6B via TEI
 ```
+
+Compose project: `bag-of-holding-mcp`, and every container name starts with
+it. That is not cosmetic — see *Blast radius* below.
 
 Only the MCP container joins the proxy network. Qdrant and the embedding
 service sit on an `internal: true` network, which Docker gives no gateway
@@ -133,7 +136,7 @@ Until then `memory_search` returns `retrieval: "lexical"` with a
 If it never comes up, check for an OOM kill:
 
 ```bash
-docker inspect bag-of-holding-embeddings --format '{{.State.OOMKilled}}'
+docker inspect bag-of-holding-mcp-embeddings --format '{{.State.OOMKilled}}'
 ```
 
 `true` means raise `EMBEDDINGS_MEM_LIMIT` in `.env` (default 6g) and
@@ -150,9 +153,37 @@ Two volumes matter, and unequally:
 - `boh-hf-cache` — model weights, re-downloadable.
 
 ```bash
-docker run --rm -v bag-of-holding_boh-data:/data -v "$PWD:/backup" \
+docker run --rm -v bag-of-holding-mcp_boh-data:/data -v "$PWD:/backup" \
   alpine tar czf /backup/boh-data-$(date +%F).tar.gz -C /data .
 ```
+
+## Blast radius: what a deploy can destroy
+
+`deploy.sh` runs as root and does four destructive things. Three are scoped;
+know what the scopes are before adding a service or renaming anything.
+
+| Operation | Scope | Watch out |
+| --- | --- | --- |
+| `git reset --hard origin/<branch>` | this checkout | **Discards local edits to tracked files.** The deploy *is* the branch. Untracked files (`.env`) survive. |
+| `compose rm --stop --force` | services in this file, minus `DEPLOY_KEEP_SERVICES` | Add a stateful service → add it to that list in `.env`. |
+| stray sweep: `docker rm -f` | containers named `^bag-of-holding-mcp-` whose compose-project label differs | **Force-removes by name prefix, across projects.** This is why the project name must be specific. |
+| `docker image prune` | `--filter label=com.docker.compose.project=bag-of-holding-mcp` | Scoped deliberately; a bare `docker image prune -f` would reap every dangling image on the host, including other apps' rollback targets. The filter matches because the Dockerfile sets that label — keep it in sync with `name:` in the compose file. |
+
+The prefix rule cuts both ways: another stack whose project name is a
+*prefix* of ours (e.g. plain `bag-of-holding`) would sweep **our** containers
+on its own deploys. If the engine repo ever gets containerised, name its
+project `bag-of-holding-engine`.
+
+### Who can do this
+
+The root-owned deploy script exists so a `git push` cannot change what runs
+as root. Be clear-eyed about how far that goes: the script still runs
+`docker compose up` and `scripts/post-deploy.sh` from the **freshly pulled
+branch**, both as root. Compose can bind-mount any host path into a
+container, so anyone who can push to `main` — or approve a PR into it — can
+reach root on this box regardless of the script's ownership. The real
+security boundary here is branch protection and who holds
+`HETZNER_SSH_KEY`, not the file mode on `deploy-*.sh`.
 
 ### Changing the embedding dimension
 
