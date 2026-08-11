@@ -1,12 +1,13 @@
 {
   "name": "@zeeuw/bag-of-holding-mcp",
-  "version": "0.2.0",
-  "description": "Model Context Protocol server for @zeeuw/bag-of-holding. Exposes the SRD 5.2 rules kernel — dice, checks, combat, conditions, XP, beats, movesets, SRD lookups — as MCP tools, plus long-campaign persistence (namespaced memory log + state vault), a starter world pack, and how-to-play guides, so any MCP-aware AI host can run rules-correct, replay-deterministic D&D campaigns without trusting the model to do the math.",
+  "version": "0.3.0",
+  "description": "Model Context Protocol server for @zeeuw/bag-of-holding. Exposes the SRD 5.2 rules kernel — dice, checks, combat, conditions, XP, beats, movesets, SRD lookups — as MCP tools, plus long-campaign persistence (namespaced memory log with hybrid semantic search + state vault), a starter world pack, and how-to-play guides. Runs over stdio locally or as a multi-tenant HTTP service, so any MCP-aware AI host can run rules-correct, replay-deterministic D&D campaigns without trusting the model to do the math.",
   "type": "module",
   "main": "index.js",
   "types": "./index.d.ts",
   "bin": {
-    "bag-of-holding-mcp": "./bin/cli.js"
+    "bag-of-holding-mcp": "./bin/cli.js",
+    "bag-of-holding-mcp-http": "./bin/http.js"
   },
   "exports": {
     ".": {
@@ -51,6 +52,7 @@
   },
   "scripts": {
     "start": "node bin/cli.js",
+    "start:http": "node bin/http.js",
     "test": "node --test tests/*.test.js",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-include='index.js' --test-coverage-include='bin/**' tests/*.test.js",
     "typecheck": "tsc --noEmit",

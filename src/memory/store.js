@@ -159,8 +159,18 @@ export function createMemoryStore(opts = {}) {
     return semanticPromise;
   }
 
+  /**
+   * Is this token allowed to reach storage at all? Always true in open
+   * mode. Exposed so a transport can reject an unknown token at the door
+   * (the HTTP entrypoint 404s) rather than letting every tool call fail
+   * one at a time.
+   */
+  function isAuthorized(token) {
+    return !authRequired || (typeof token === 'string' && tokenHashes.has(sha256(token)));
+  }
+
   function namespaceFor(token) {
-    if (authRequired && (typeof token !== 'string' || !tokenHashes.has(sha256(token)))) {
+    if (!isAuthorized(token)) {
       throw new Error(
         'Invalid or missing memory token: this server runs with a token allowlist. Pass the token you were issued (any opaque string; the server stores only its hash).'
       );
@@ -275,6 +285,7 @@ export function createMemoryStore(opts = {}) {
   return {
     dataDir,
     authRequired,
+    isAuthorized,
 
     /** Append one memory record; returns it with its assigned id. */
     record(token, campaign, input) {

@@ -1,0 +1,118 @@
+name: deploy
+
+# On every push to main, SSH into the Hetzner host and roll the deployed MCP
+# server forward: pull the new code and rebuild/restart the container.
+#
+# Requires one repository secret:
+#   HETZNER_SSH_KEY  — the PRIVATE key matching ~/.ssh/hetzner (the one whose
+#                      public half is in the server's authorized_keys).
+#
+# Login is key-only on port 3356 (user ddezeeuw).
+#
+# This file, docker/deploy.sh and scripts/bootstrap-host.sh are the shared
+# deployment platform — nothing in them names this app beyond the env block
+# below and the language of the test gate.
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+# Never let two deploys run at once; queue them instead of cancelling so a
+# half-applied build can't get interrupted mid-rollout.
+concurrency:
+  group: deploy-bag-of-holding-mcp
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: 5.9.85.168
+  DEPLOY_PORT: "3356"
+  DEPLOY_USER: ddezeeuw
+  DEPLOY_PATH: /nebula/apps/bag-of-holding-mcp
+
+jobs:
+  # Gate: the suite must pass before anything touches the running server. A
+  # red suite fails this job and `deploy` (needs: test) never runs — so a typo
+  # pushed from a phone can't roll out to something holding people's
+  # campaigns. node-version mirrors the runtime image (Dockerfile).
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Same reasoning as ci.yml: the engine peer is unpublished at the
+      # version this server targets, so resolve it from source rather than
+      # the registry. The image does the same thing in its builder stage.
+      - name: Install with the engine from source
+        run: |
+          npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main"
+          npm install --no-package-lock
+      - run: npm test
+      - run: npm run typecheck
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          install -m 600 /dev/null ~/.ssh/hetzner
+          printf '%s\n' "${{ secrets.HETZNER_SSH_KEY }}" > ~/.ssh/hetzner
+
+          # Fail here, with a sentence you can act on, rather than three steps
+          # later with ssh's "error in libcrypto / Too many authentication
+          # failures" — which is what an unset secret actually looks like,
+          # because writing an empty file succeeds and nothing checks it.
+          if [ ! -s ~/.ssh/hetzner ]; then
+            echo "::error title=HETZNER_SSH_KEY is empty::Set the HETZNER_SSH_KEY repository secret (Settings → Secrets and variables → Actions) to the PRIVATE key whose public half is in the server's authorized_keys. Secrets are per-repository — the one on StockSensei does not apply here."
+            exit 1
+          fi
+          if ! ssh-keygen -y -f ~/.ssh/hetzner >/dev/null 2>&1; then
+            echo "::error title=HETZNER_SSH_KEY is not a valid private key::The secret is set but unreadable as a key. Paste the whole file including the BEGIN/END lines and a trailing newline (pbcopy < ~/.ssh/hetzner), not a fingerprint or a public key."
+            exit 1
+          fi
+          echo "key OK: $(ssh-keygen -l -f ~/.ssh/hetzner | awk '{print $1, $2, $4}')"
+
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - uses: actions/checkout@v4
+
+      # Slug is derived the same way scripts/bootstrap-host.sh derives it — the
+      # lowercased repository name — so nothing here hardcodes the app.
+      - name: Derive app identity
+        run: |
+          slug=$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
+          echo "SLUG=$slug" >> "$GITHUB_ENV"
+          echo "DEPLOY_SCRIPT=/nebula/apps/deploy-$slug.sh" >> "$GITHUB_ENV"
+          echo "app slug: $slug"
+
+      # The host script is root-owned on purpose (a push must never widen what
+      # CI runs as root), so it can't be auto-synced — but drift must be LOUD.
+      - name: Warn when the host deploy script drifts from the repo copy
+        run: |
+          expected=$(sha256sum docker/deploy.sh | cut -d' ' -f1)
+          actual=$(ssh -i ~/.ssh/hetzner -p "$DEPLOY_PORT" -o IdentitiesOnly=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sha256sum $DEPLOY_SCRIPT 2>/dev/null | cut -d' ' -f1" \
+            || echo unreadable)
+          if [ "$expected" != "$actual" ]; then
+            echo "::warning title=deploy script drift::$DEPLOY_SCRIPT does not match docker/deploy.sh — kill-first semantics and DEPLOY_KEEP_SERVICES may not be active. Reinstall by re-running ./scripts/bootstrap-host.sh in $DEPLOY_PATH."
+          else
+            echo "host deploy script matches the repo copy ($expected)"
+          fi
+
+      - name: Pull & restart the server
+        # Runs a root-owned deploy script the ddezeeuw user may invoke
+        # passwordless via /etc/sudoers.d/deploy-<slug>. Keeping the privileged
+        # work in a fixed, root-owned script (rather than wildcards in sudoers)
+        # is why this is safe.
+        run: |
+          ssh -i ~/.ssh/hetzner -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n $DEPLOY_SCRIPT"

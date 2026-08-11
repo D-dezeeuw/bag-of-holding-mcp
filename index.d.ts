@@ -7,6 +7,7 @@
 // file in the same commit.
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 
 // ============================================================
 // Sessions
@@ -183,6 +184,12 @@ export interface MemoryStoreOptions {
 export interface MemoryStore {
   dataDir: string;
   authRequired: boolean;
+  /**
+   * Whether this token may reach storage at all (always true in open
+   * mode). Lets a transport reject at the door — the HTTP surface 404s —
+   * instead of failing every tool call one at a time.
+   */
+  isAuthorized(token?: string): boolean;
   record(token: string | undefined, campaign: string, input: MemoryRecordInput): MemoryRecord;
   search(
     token: string | undefined,
@@ -288,9 +295,59 @@ export interface ToolDescriptor {
 export function createServer(opts?: {
   sessions?: SessionRegistry;
   memory?: MemoryStoreOptions;
+  /** Prebuilt store, shared across tenants by the HTTP entrypoint. */
+  memoryStore?: MemoryStore;
+  /**
+   * Pin the tenant. The `token` parameter is then removed from every
+   * memory/state tool schema and this value used instead — how the HTTP
+   * transport keeps the URL-path token out of the model's hands.
+   */
+  memoryToken?: string;
 }): {
   server: McpServer;
   sessions: SessionRegistry;
   memory: MemoryStore;
   tools: ToolDescriptor[];
 };
+
+// ============================================================
+// HTTP transport
+// ============================================================
+
+/**
+ * Options for the HTTP surface. Either configure the store inline
+ * (`memory`) or hand over a prebuilt one (`memoryStore`); the
+ * container passes neither and lets the environment decide.
+ */
+export interface HttpOptions {
+  memory?: MemoryStoreOptions;
+  memoryStore?: MemoryStore;
+}
+
+/**
+ * Build the request listener for the streamable-HTTP surface:
+ * `POST /mcp/<token>` (the token is the tenant) plus an open
+ * `GET /health`. Unknown tokens and unknown paths both 404.
+ */
+export function createHttpHandler(opts?: HttpOptions): {
+  store: MemoryStore;
+  handler: (req: IncomingMessage, res: ServerResponse) => void;
+};
+
+/**
+ * Start an HTTP server on `port`. Rejects unless a token allowlist
+ * is configured — an open endpoint would serve every campaign to
+ * anyone who found the URL.
+ */
+export function listen(opts?: HttpOptions & { port?: number; host?: string }): Promise<HttpServer>;
+
+/**
+ * The container entrypoint's boot sequence. Returns a process exit
+ * code (0 healthy, 2 fail-closed) rather than exiting, so bin/http.js
+ * stays branchless and this stays testable.
+ */
+export function main(opts?: HttpOptions & {
+  env?: NodeJS.ProcessEnv;
+  out?: Pick<Console, 'log' | 'error'>;
+  host?: string;
+}): Promise<{ code: number; server: HttpServer | null }>;

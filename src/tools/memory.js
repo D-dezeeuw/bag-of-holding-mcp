@@ -8,6 +8,16 @@
 // Together they mean a campaign survives a context reset: recap
 // from memory, reload the party from state, keep playing.
 //
+// Two tenancy modes, and the tool schemas differ between them:
+//
+//   - stdio (local): the token is an optional tool parameter, so a
+//     single desktop process can serve several tables.
+//   - HTTP (deployed): the tenant is pinned by the transport — the
+//     token lives in the URL path — and the `token` parameter is
+//     removed from every schema below. The model then cannot see,
+//     supply, or leak it, and cannot reach another tenant's shelf
+//     by guessing a string.
+//
 // The `guide_get({ id: "memory-protocol" })` guide is the long-form
 // discipline; the tool descriptions below are its short form.
 
@@ -33,16 +43,29 @@ const TypeField = z.enum(MEMORY_TYPES).describe(
  * Unlike the engine tool factories these close over the *store*,
  * not the session registry — memory deliberately outlives any
  * engine session (that is its whole point).
+ *
+ * @param store         memory store (see src/memory/store.js)
+ * @param pinnedToken   when set, the tenant is fixed by the
+ *                      transport: `token` vanishes from every input
+ *                      schema and this value is used instead.
  */
-export function memoryTools(store) {
+export function memoryTools(store, pinnedToken) {
+  const pinned = typeof pinnedToken === 'string' && pinnedToken !== '';
+  // Spread into each schema: `{}` when pinned, so the field is
+  // absent rather than present-and-ignored. An ignored parameter
+  // the model can still fill in is an invitation to leak a secret
+  // into the transcript.
+  const tokenField = pinned ? {} : { token: TokenField };
+  const tokenOf = pinned ? () => pinnedToken : (args) => args.token;
+
   return [
     {
       name: 'memory_status',
-      description: 'Orient yourself: which namespace this token maps to, where data lives on disk, whether the server requires tokens, the semantic-search state (embeddings sidecar + Qdrant, or lexical-only), and every campaign in the namespace with record/state counts. Call this once at the start of a session before recording.',
-      input: { token: TokenField },
-      handler: async ({ token }) => {
+      description: 'Orient yourself: which namespace you are on, where data lives, whether the server requires tokens, the semantic-search state (embeddings sidecar + Qdrant, or lexical-only), and every campaign in the namespace with record/state counts. Call this once at the start of a session before recording.',
+      input: { ...tokenField },
+      handler: async (args) => {
         try {
-          return toolResult(store.info(token));
+          return toolResult(store.info(tokenOf(args)));
         } catch (err) { return toolError(err); }
       }
     },
@@ -50,7 +73,7 @@ export function memoryTools(store) {
       name: 'memory_record',
       description: 'Append one memory to the campaign\'s permanent log. Record at scene ends, first meetings, promises made, and always one session-summary before ending a session. Write text in third person, past tense, self-contained (it will be read months later with no context). Name every proper noun in `entities` — that is what search keys on. Returns the stored record with its id.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         type: TypeField,
         text: z.string().describe('The memory itself — 1-3 sentences, self-contained, third person past tense. Facts, not transcript.'),
@@ -58,9 +81,10 @@ export function memoryTools(store) {
         tags: z.array(z.string()).optional().describe('Free labels for filtering, e.g. ["act-1", "secret", "combat"].'),
         importance: z.number().int().min(1).max(5).optional().describe('1 trivia … 5 campaign-defining. Default 3. Reserve 5 for facts that change the campaign\'s direction.')
       },
-      handler: async ({ token, campaign, ...input }) => {
+      handler: async (args) => {
         try {
-          return toolResult(store.record(token, campaign, input));
+          const { campaign, type, text, entities, tags, importance } = args;
+          return toolResult(store.record(tokenOf(args), campaign, { type, text, entities, tags, importance }));
         } catch (err) { return toolError(err); }
       }
     },
@@ -68,16 +92,17 @@ export function memoryTools(store) {
       name: 'memory_search',
       description: 'Query the campaign log. Lexical BM25 always runs (entities and tags double-weighted); with the semantic sidecars up (Qwen embeddings + Qdrant, see memory_status) results are hybrid — the `retrieval` field says which you got, and paraphrased queries ("the smuggler kid with the ledger") then work as well as exact names. Call it whenever a name resurfaces, a scene opens in a known place, or before improvising a fact you might have already established. Empty hits honestly means the log has nothing — do not invent a memory.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         query: z.string().describe('What you need to recall, e.g. "Maela debt lantern court".'),
         limit: z.number().int().min(1).max(50).optional().describe('Max hits (default 8).'),
         type: TypeField.optional(),
         entities: z.array(z.string()).optional().describe('Restrict to records naming at least one of these entities (case-insensitive).')
       },
-      handler: async ({ token, campaign, ...query }) => {
+      handler: async (args) => {
         try {
-          return toolResult(await store.search(token, campaign, query));
+          const { campaign, query, limit, type, entities } = args;
+          return toolResult(await store.search(tokenOf(args), campaign, { query, limit, type, entities }));
         } catch (err) { return toolError(err); }
       }
     },
@@ -85,14 +110,15 @@ export function memoryTools(store) {
       name: 'memory_recent',
       description: 'Newest records first — the session-start recap read. Combine with type: "session-summary" to reload where the story left off, then memory_search for specifics as they come up.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         limit: z.number().int().min(1).max(100).optional().describe('How many records (default 10).'),
         type: TypeField.optional()
       },
-      handler: async ({ token, campaign, ...opts }) => {
+      handler: async (args) => {
         try {
-          return toolResult(store.recent(token, campaign, opts));
+          const { campaign, limit, type } = args;
+          return toolResult(store.recent(tokenOf(args), campaign, { limit, type }));
         } catch (err) { return toolError(err); }
       }
     },
@@ -100,23 +126,23 @@ export function memoryTools(store) {
       name: 'memory_forget',
       description: 'Tombstone a record by id (it stops appearing in search/recent/export; the underlying log stays append-only). Use for corrections — record the corrected fact first, then forget the wrong one.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         id: z.string().describe('Record id from memory_record / memory_search, e.g. "m-17".')
       },
-      handler: async ({ token, campaign, id }) => {
+      handler: async (args) => {
         try {
-          return toolResult(store.forget(token, campaign, id));
+          return toolResult(store.forget(tokenOf(args), args.campaign, args.id));
         } catch (err) { return toolError(err); }
       }
     },
     {
       name: 'memory_export',
       description: 'Dump every live record — the backup and migration format. Offer this to the player at the end of a long session; the output re-imports with memory_import.',
-      input: { token: TokenField, campaign: CampaignField },
-      handler: async ({ token, campaign }) => {
+      input: { ...tokenField, campaign: CampaignField },
+      handler: async (args) => {
         try {
-          return toolResult(store.exportAll(token, campaign));
+          return toolResult(store.exportAll(tokenOf(args), args.campaign));
         } catch (err) { return toolError(err); }
       }
     },
@@ -124,13 +150,13 @@ export function memoryTools(store) {
       name: 'memory_import',
       description: 'Re-record an exported dump into a campaign (fresh ids, original timestamps kept). Import into an empty campaign name for a faithful restore; importing into a live campaign appends.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         records: z.array(z.record(z.unknown())).describe('The `records` array from a memory_export payload.')
       },
-      handler: async ({ token, campaign, records }) => {
+      handler: async (args) => {
         try {
-          return toolResult(store.importAll(token, campaign, records));
+          return toolResult(store.importAll(tokenOf(args), args.campaign, args.records));
         } catch (err) { return toolError(err); }
       }
     },
@@ -138,14 +164,14 @@ export function memoryTools(store) {
       name: 'state_save',
       description: 'Checkpoint mechanical state as JSON under a named key (last write per key wins). Save the party\'s character records under "party" after every levelling or loot change, and a Session.serialize payload under "session" when pausing mid-encounter. Memory remembers the story; state_save remembers the numbers.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         key: z.string().describe('Checkpoint name, e.g. "party", "session", "initiative". Same grammar as campaign names.'),
         data: z.record(z.unknown()).describe('Any JSON object — party records, serialized session, tracker state.')
       },
-      handler: async ({ token, campaign, key, data }) => {
+      handler: async (args) => {
         try {
-          return toolResult(store.stateSave(token, campaign, key, data));
+          return toolResult(store.stateSave(tokenOf(args), args.campaign, args.key, args.data));
         } catch (err) { return toolError(err); }
       }
     },
@@ -153,23 +179,23 @@ export function memoryTools(store) {
       name: 'state_load',
       description: 'Load a checkpoint saved with state_save. At session start: state_load "party" for current character records instead of reconstructing them from prose.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         key: z.string().describe('Checkpoint name passed to state_save.')
       },
-      handler: async ({ token, campaign, key }) => {
+      handler: async (args) => {
         try {
-          return toolResult(store.stateLoad(token, campaign, key));
+          return toolResult(store.stateLoad(tokenOf(args), args.campaign, args.key));
         } catch (err) { return toolError(err); }
       }
     },
     {
       name: 'state_list',
       description: 'List the campaign\'s checkpoints with sizes and save times.',
-      input: { token: TokenField, campaign: CampaignField },
-      handler: async ({ token, campaign }) => {
+      input: { ...tokenField, campaign: CampaignField },
+      handler: async (args) => {
         try {
-          return toolResult(store.stateList(token, campaign));
+          return toolResult(store.stateList(tokenOf(args), args.campaign));
         } catch (err) { return toolError(err); }
       }
     },
@@ -177,13 +203,13 @@ export function memoryTools(store) {
       name: 'state_delete',
       description: 'Delete one checkpoint by key. Memory records are never touched by this.',
       input: {
-        token: TokenField,
+        ...tokenField,
         campaign: CampaignField,
         key: z.string().describe('Checkpoint name to delete.')
       },
-      handler: async ({ token, campaign, key }) => {
+      handler: async (args) => {
         try {
-          return toolResult(store.stateDelete(token, campaign, key));
+          return toolResult(store.stateDelete(tokenOf(args), args.campaign, args.key));
         } catch (err) { return toolError(err); }
       }
     }

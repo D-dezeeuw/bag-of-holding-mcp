@@ -192,11 +192,31 @@ is why the quickstart insists.
   read a shelf they don't hold the token for.
 - **Hosting for others:** set `BOH_MEMORY_TOKEN_HASHES` to the
   SHA-256 hashes of the tokens you've issued and the store runs
-  closed — unknown tokens are refused outright. Add API keys to the
-  sidecars (`BOH_EMBEDDINGS_API_KEY`, `BOH_QDRANT_API_KEY`) if they
-  are reachable beyond localhost. This is the same shape a paid
-  hosted tier runs; details in
+  closed — unknown tokens are refused outright. This is the same
+  shape a paid hosted tier runs; details in
   [implementation-long-campaign.md](implementation-long-campaign.md).
+
+### Playing against a deployed server
+
+If someone has already deployed this (see
+[deployment.md](deployment.md)), you don't install anything at all —
+the campaign lives on the server and you connect to a URL:
+
+- **Claude Desktop**: Settings → Connectors → *Add custom connector*.
+  Title it whatever you like, paste `https://<host>/mcp/<token>` as
+  the MCP server URL, leave the OAuth fields blank.
+- **Claude Code**:
+  `claude mcp add --transport http boh https://<host>/mcp/<token>`
+
+Your token is already in that URL, so skip step 3 entirely — you'll
+notice the memory tools have no `token` parameter at all in this
+mode, which is deliberate: the model can't see it, so it can't leak
+it into the story. Everything else in this guide works identically.
+
+Two things follow from the token being in a URL. Treat the whole URL
+as the password (it lands in browser history and access logs more
+readily than a header would), and don't paste it into the chat —
+it's configuration, not conversation.
 
 ## 9. When something's off
 
@@ -207,6 +227,8 @@ is why the quickstart insists.
 | "Invalid or missing memory token" | The server runs closed (`BOH_MEMORY_TOKEN_HASHES`); pass an issued token |
 | `retrieval: "lexical"` with a `semanticError` | Sidecars down or still downloading the model — `docker compose ps`; search keeps working meanwhile |
 | Campaign "gone" after a chat reset | It isn't: `memory_status` → your campaigns are on disk; run the session-recap prompt |
+| Remote connector 404s | Wrong or unlisted token — an unknown token and a wrong path return the same 404 on purpose. Check the URL against the issued one; `GET /health` should return `{"ok":true}` regardless |
+| Remote connector rejects everything after a token rotation | Storage is namespaced *by token*, so a new token is a new empty shelf. `memory_export` under the old token first, then import under the new one |
 | Genuinely lost the disk | Restore from your latest `memory_export` with `memory_import`, `state_save` the party from the export's records, keep playing |
 
 ---

@@ -40,7 +40,7 @@ import { worldTools } from './tools/world.js';
 import { guideTools } from './tools/guides.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.2.0';
+const SERVER_VERSION = '0.3.0';
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.
@@ -52,7 +52,9 @@ const SERVER_VERSION = '0.2.0';
  *
  * @param {{
  *   sessions?: ReturnType<typeof createSessions>,
- *   memory?: import('../index.js').MemoryStoreOptions
+ *   memory?: import('../index.js').MemoryStoreOptions,
+ *   memoryStore?: ReturnType<typeof createMemoryStore>,
+ *   memoryToken?: string
  * }} [opts]
  *   `sessions` injects a shared session registry (rare — usually
  *   you want the default fresh one). `memory` configures the disk
@@ -60,10 +62,18 @@ const SERVER_VERSION = '0.2.0';
  *   Qdrant); omitted, everything resolves from the environment
  *   (BOH_DATA_DIR, BOH_MEMORY_TOKEN_HASHES, BOH_EMBEDDINGS_*,
  *   BOH_QDRANT_*) with ~/.bag-of-holding as the default root.
+ *   `memoryStore` injects a prebuilt store instead — the HTTP
+ *   entrypoint builds one per process and shares it across tenants
+ *   (isolation is per call, by token), so the Qdrant and embeddings
+ *   clients are established once rather than per connection.
+ *   `memoryToken` pins the tenant: the `token` parameter is then
+ *   removed from every memory/state tool schema and this value is
+ *   used instead. That is how the HTTP transport keeps the token —
+ *   which lives in the URL path — out of the model's hands.
  */
 export function createServer(opts = {}) {
   const sessions = opts.sessions ?? createSessions();
-  const memory = createMemoryStore(opts.memory ?? {});
+  const memory = opts.memoryStore ?? createMemoryStore(opts.memory ?? {});
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
   const allTools = [
@@ -80,7 +90,7 @@ export function createServer(opts = {}) {
     ...spellsTools(sessions),
     ...monsterTools(sessions),
     ...restTools(sessions),
-    ...memoryTools(memory),
+    ...memoryTools(memory, opts.memoryToken),
     ...worldTools(),
     ...guideTools()
   ];

@@ -104,6 +104,30 @@ Every end     memory_record (session-summary) → state_save "party" → memory_
 - **Worlds** are static, deep-frozen packs. Public layer by default; `layer: "gm"` (and `world_secrets`) is spoiler material the model is instructed to reveal only through play.
 - **Guides** ship identically as prompts, resources (`boh://guide/<id>`) and tools, because host support varies.
 
+### Running it as a server (remote connector)
+
+Everything above assumes the local stdio path, where the server is a
+subprocess of your AI host and the campaign lives on that machine. It also
+runs as a deployed HTTP service, so the campaign lives on the server and any
+client can reach it:
+
+```bash
+docker compose up -d     # mcp + qdrant + embeddings
+```
+
+The MCP surface is `POST /mcp/<token>` with an open `GET /health`. The token
+in the URL **is** the tenant — it hashes to that table's storage namespace,
+so one deployment serves many tables with no shared state, and the model
+never handles it (the `token` parameter is removed from every memory and
+state tool when the transport pins the tenant). Point Claude Desktop's "Add
+custom connector" at `https://<host>/mcp/<token>`, or
+`claude mcp add --transport http boh https://<host>/mcp/<token>`.
+
+The HTTP entrypoint refuses to start without `BOH_MEMORY_TOKEN_HASHES`, so a
+half-configured deploy fails closed instead of serving every campaign to
+whoever finds the URL. Full walkthrough for the nginx-proxy-manager + CI
+deployment: **[docs/deployment.md](docs/deployment.md)**.
+
 ### Storage, tokens and the hosted mode
 
 Data root: `$BOH_DATA_DIR`, default `~/.bag-of-holding` (nothing is written until the first write). Every memory/state tool takes an optional `token` — an **opaque string** that namespaces storage under `t-<sha256(token)[0..16]>`; no token means the shared `local` namespace. Tokens are never stored, only hashed. Use any high-entropy string (`openssl rand -base64 32`); never reuse a real credential (an SSH key, an API key) as a token.
@@ -113,7 +137,7 @@ BOH_DATA_DIR=~/.bag-of-holding            # storage root
 BOH_MEMORY_TOKEN_HASHES=<sha256>,<sha256> # optional: closed mode
 ```
 
-With `BOH_MEMORY_TOKEN_HASHES` set the store runs **closed**: only tokens hashing into the list are accepted. That's the entire auth story for a future hosted tier — a billing site mints random tokens, stores only hashes, and feeds them to this same server over an HTTP transport. Design and roadmap: [docs/implementation-long-campaign.md](docs/implementation-long-campaign.md).
+With `BOH_MEMORY_TOKEN_HASHES` set the store runs **closed**: only tokens hashing into the list are accepted, and over HTTP anything unlisted gets a 404 (the same 404 as a wrong path, so the endpoint is not an oracle for guessing tokens). That is also the whole auth story for a hosted tier — a billing site mints random tokens and stores only their hashes. Design and roadmap: [docs/implementation-long-campaign.md](docs/implementation-long-campaign.md).
 
 ### Semantic memory (optional sidecars)
 
@@ -150,6 +174,18 @@ await server.connect(new StdioServerTransport());
 
 // Share `sessions` across multiple transports:
 const { server: httpServer } = createServer({ sessions });
+```
+
+For the HTTP surface, `createHttpHandler()` returns a plain Node request
+listener (mount it in your own server), `listen()` starts one, and `main()`
+is the container's whole boot sequence — it returns an exit code instead of
+calling `process.exit`, so it is testable:
+
+```js
+import { createHttpHandler } from '@zeeuw/bag-of-holding-mcp';
+
+const { handler, store } = createHttpHandler({ memory: { dataDir, tokenHashes } });
+http.createServer(handler).listen(8091);
 ```
 
 `sessions` is the in-memory session registry; programmatic code can call `sessions.create`, `sessions.rollLog`, etc. without going through MCP tool dispatch.
