@@ -49,7 +49,9 @@ services:
       BOH_EMBEDDINGS_DIM: ${BOH_EMBEDDINGS_DIM:-256}
       BOH_QDRANT_URL: http://qdrant:6333
       BOH_QDRANT_COLLECTION: ${BOH_QDRANT_COLLECTION:-boh-memory}
-      BOH_QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      # BOH_QDRANT_API_KEY is intentionally absent — see the qdrant service.
+      # Uncomment BOTH lines together if you ever enable the key.
+      # BOH_QDRANT_API_KEY: ${QDRANT_API_KEY}
     volumes:
       # Campaign memory + state vault. The irreplaceable one: vectors can
       # always be rebuilt from this by dropping the Qdrant collection and
@@ -82,10 +84,21 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.15.1
     container_name: bag-of-holding-mcp-qdrant
-    environment:
-      # Optional even here: the container has no route off-host. Set it
-      # anyway if you ever attach this to a routable network.
-      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    # NO api key by default, and the omission is deliberate — an EMPTY key is
+    # worse than none. `QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}` always
+    # *defines* the variable; with an unset QDRANT_API_KEY it defines it as "".
+    # Qdrant reads that as "auth is configured" and enforces a key that no
+    # request can ever match, so every call 401s — including from the server
+    # that shares the value. Blanking the .env line does not help; the variable
+    # is still defined. Absent is the only way to mean "off".
+    #
+    # This costs nothing: qdrant sits on boh-internal (internal: true), with no
+    # gateway and no published ports, so 6333 is unreachable from off-host.
+    # To enable a key, uncomment below AND the matching line on the mcp service
+    # — no `:-` default, so an unset variable becomes a loud compose error
+    # rather than a silent lockout.
+    # environment:
+    #   QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
     volumes:
       - boh-qdrant:/qdrant/storage
     networks:
