@@ -65,11 +65,19 @@ fi
 echo "    checking the semantic sidecars..."
 dc exec -T mcp node -e "
 const qdrant = process.env.BOH_QDRANT_URL, emb = process.env.BOH_EMBEDDINGS_URL;
-const probe = (name, url) => fetch(url, { signal: AbortSignal.timeout(5000) })
-  .then(r => console.log('    ' + name + ': HTTP ' + r.status))
+// Send the api-key exactly as the server does. Probing without it made a
+// correctly-secured Qdrant report 401 and read like a failure, which is a
+// worse outcome than no check at all — a health probe that cries wolf gets
+// ignored on the day it is right.
+const key = process.env.BOH_QDRANT_API_KEY;
+const headers = key ? { 'api-key': key } : {};
+const probe = (name, url, opts) => fetch(url, { signal: AbortSignal.timeout(5000), ...opts })
+  .then(r => console.log('    ' + name + ': HTTP ' + r.status + (r.ok ? '' : ' — NOT ok')))
   .catch(e => console.log('    ' + name + ': unreachable (' + e.message + ') — search stays lexical'));
-Promise.all([probe('qdrant', qdrant + '/collections'), probe('embeddings', emb.replace(/\/v1\$/, '') + '/health')])
-  .then(() => process.exit(0));
+Promise.all([
+  probe('qdrant', qdrant + '/collections', { headers }),
+  probe('embeddings', emb.replace(/\/v1\$/, '') + '/health')
+]).then(() => process.exit(0));
 " 2>/dev/null || echo "    WARNING: could not probe the sidecars"
 
 exit $status

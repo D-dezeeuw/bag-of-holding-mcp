@@ -64,6 +64,20 @@ test('the sidecars stay off the proxy network and the internal network has no ga
   assert.equal(proxyRefs, 2, 'expected exactly one service reference plus the networks: declaration');
 });
 
+test('only the embedding server has egress, and only because it downloads a model', () => {
+  // boh-egress exists so TEI can reach huggingface.co on first boot — on a
+  // purely internal network it crash-loops with a DNS resolution error.
+  // Qdrant must never join it: it has no reason to reach the internet, and
+  // it holds the campaign vectors.
+  assert.doesNotMatch(compose, /boh-egress:\n\s*internal:\s*true/, 'boh-egress must not be internal');
+  const egressRefs = [...compose.matchAll(/^\s+- boh-egress$/gm)].length;
+  assert.equal(egressRefs, 1, 'exactly one service may sit on the egress network');
+
+  const qdrantBlock = compose.slice(compose.indexOf('\n  qdrant:'), compose.indexOf('\n  embeddings:'));
+  assert.ok(qdrantBlock.includes('boh-internal'), 'qdrant stays on the internal network');
+  assert.ok(!qdrantBlock.includes('boh-egress'), 'qdrant must not have egress');
+});
+
 test('the required auth variable has no default, so a misconfigured deploy fails closed', () => {
   // `:?` (error if unset) rather than `:-` (fall back). With a default this
   // would boot with an empty allowlist.

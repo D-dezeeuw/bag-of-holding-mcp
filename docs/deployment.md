@@ -15,7 +15,26 @@ nginx-proxy-manager_default (external, 172.22.0.0/16)
 boh-internal (internal: true — no gateway, no route off-host)
   ├── bag-of-holding-mcp-qdrant       vectors
   └── bag-of-holding-mcp-embeddings   Qwen3-Embedding-0.6B via TEI
+                │
+boh-egress (outbound only, no published ports)
+  └── bag-of-holding-mcp-embeddings   model downloads from huggingface.co
 ```
+
+**Why the embedding server has a second network.** `internal: true` means
+*no gateway* — no DNS, no internet. TEI downloads its model on first boot,
+so on the internal network alone it crash-loops with:
+
+```
+dns error: failed to lookup address information: Temporary failure in name resolution
+```
+
+which reads like a broken network but is the isolation doing its job.
+`boh-egress` restores outbound access only; nothing publishes a port, so
+there is still no inbound path. Qdrant deliberately stays off it.
+
+To harden once the model is cached: set `HF_HUB_OFFLINE=1` on the
+embeddings service and drop `boh-egress`. The weights live in the
+`boh-hf-cache` volume, so it never needs the internet again.
 
 Compose project: `bag-of-holding-mcp`, and every container name starts with
 it. That is not cosmetic — see *Blast radius* below.
@@ -142,6 +161,21 @@ docker inspect bag-of-holding-mcp-embeddings --format '{{.State.OOMKilled}}'
 `true` means raise `EMBEDDINGS_MEM_LIMIT` in `.env` (default 6g) and
 redeploy. The model wants roughly 3–4 GB resident plus batch headroom;
 everything else in this stack is deliberately small so this one can have room.
+
+If `OOMKilled` is `false`, read `docker logs bag-of-holding-mcp-embeddings`
+instead — a DNS resolution error there means the container lost its egress
+network (see above), not that the host's network is broken.
+
+### QDRANT_API_KEY is optional
+
+It lives in `.env` and defaults to empty. Qdrant sits on `internal: true`
+with no route off-host, so the key protects an endpoint nothing off-box can
+reach — leaving it blank is a reasonable choice, and setting it costs
+nothing either since the same value reaches both containers
+(`QDRANT__SERVICE__API_KEY` on Qdrant, `BOH_QDRANT_API_KEY` on the server).
+Set it if you ever move Qdrant onto a routable network. To turn it off:
+blank the line in `.env` and redeploy — Qdrant reads it at start, so the
+requirement drops when the container restarts.
 
 ### Backups
 
