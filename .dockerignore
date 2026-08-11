@@ -1,0 +1,15 @@
+# The Dockerfile COPYs an allowlist, so this is belt-and-braces — but it
+# keeps the build context small (and keeps .env off the daemon entirely).
+.git
+.github
+node_modules
+tests
+docs
+examples
+.env
+.env.*
+!.env.example
+docker-compose.yml
+Dockerfile
+.dockerignore
+*.log

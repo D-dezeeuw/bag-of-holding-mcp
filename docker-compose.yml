@@ -1,0 +1,142 @@
+name: bag-of-holding-mcp
+
+# Three containers, two networks, one public surface.
+#
+#   nginx-proxy-manager_default (external) ── mcp @ 172.22.0.44 ← NPM proxies
+#                                              │                  the hostname
+#   boh-internal (internal: true) ─────────────┤
+#                                              ├── qdrant     (no public route)
+#                                              └── embeddings (no public route)
+#
+# Naming rule, and it is load-bearing: the project name and every
+# container_name share the `bag-of-holding-mcp` prefix, because
+# docker/deploy.sh force-removes containers matching `^<project>-` that
+# belong to a different compose project (its stray sweep) and passes
+# `--remove-orphans`. A vaguer project name — `bag-of-holding`, say — would
+# make this stack's deploy delete containers belonging to any other stack
+# sharing that prefix, and the sibling engine repo is literally called
+# bag-of-holding. If you ever containerise that one, give it a project name
+# that is NOT a prefix of this one (`bag-of-holding-engine`, not
+# `bag-of-holding`), or its deploys will reap these containers.
+#
+# Only `mcp` joins the proxy network, so Qdrant and the embedding
+# service are unreachable from off-host by construction — `internal: true`
+# gives them no gateway at all. That is why there are no firewall rules
+# here and no published ports on either sidecar: there is nothing to
+# firewall. Do NOT add `ports:` to them "for debugging"; use
+# `docker compose exec` instead.
+#
+# Deploy: scripts/bootstrap-host.sh once, then CI (or
+# `sudo -n /nebula/apps/deploy-bag-of-holding-mcp.sh`). See docs/deployment.md.
+
+services:
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bag-of-holding-mcp-server
+    environment:
+      BOH_HTTP_PORT: "8091"
+      BOH_DATA_DIR: /data
+      # The allowlist IS the auth. bin/http.js refuses to start without
+      # it rather than serving every campaign to anyone who finds the URL,
+      # so a half-configured deploy fails closed instead of open.
+      BOH_MEMORY_TOKEN_HASHES: ${BOH_MEMORY_TOKEN_HASHES:?set it in .env — comma-separated sha256 of the tokens you issued}
+      # Internal Docker DNS, not the public hostname — no round trip
+      # through NPM/TLS for containers sharing a network.
+      BOH_EMBEDDINGS_URL: http://embeddings:80/v1
+      BOH_EMBEDDINGS_MODEL: ${BOH_EMBEDDINGS_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      BOH_EMBEDDINGS_DIM: ${BOH_EMBEDDINGS_DIM:-256}
+      BOH_QDRANT_URL: http://qdrant:6333
+      BOH_QDRANT_COLLECTION: ${BOH_QDRANT_COLLECTION:-boh-memory}
+      BOH_QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      # Campaign memory + state vault. The irreplaceable one: vectors can
+      # always be rebuilt from this by dropping the Qdrant collection and
+      # letting the next search re-embed, but nothing rebuilds the log.
+      - boh-data:/data
+    networks:
+      # Pinned like the other stacks on this host: NPM caches the upstream
+      # IP at config load, so a rebuild-assigned dynamic IP would 502 every
+      # proxied call. Confirm .44 is free before the first deploy:
+      #   docker network inspect nginx-proxy-manager_default
+      nginx-proxy-manager_default:
+        ipv4_address: 172.22.0.44
+      boh-internal:
+    depends_on:
+      - qdrant
+      - embeddings
+    restart: unless-stopped
+    read_only: true              # every write goes to the volume or tmpfs
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    mem_limit: 256m
+    cpus: "0.50"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.1
+    container_name: bag-of-holding-mcp-qdrant
+    environment:
+      # Optional even here: the container has no route off-host. Set it
+      # anyway if you ever attach this to a routable network.
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - boh-qdrant:/qdrant/storage
+    networks:
+      - boh-internal
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: "1.0"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  embeddings:
+    # Text Embeddings Inference serving Qwen3-Embedding-0.6B over an
+    # OpenAI-compatible /v1/embeddings route. amd64-only image — this does
+    # not run on Hetzner's ARM (CAX) instances, so keep this stack on a
+    # CX/CPX box. Qwen3 needs TEI >= 1.8.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    container_name: bag-of-holding-mcp-embeddings
+    command: --model-id ${BOH_EMBEDDINGS_MODEL:-Qwen/Qwen3-Embedding-0.6B} --auto-truncate
+    volumes:
+      - boh-hf-cache:/data        # model downloads once, then cached
+    networks:
+      - boh-internal
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # The big one. 0.6B params plus runtime and batch buffers; this is the
+    # knob to raise if the container OOMs on first load (docker inspect
+    # shows OOMKilled). Everything else in this stack is small precisely so
+    # this can have room.
+    mem_limit: ${EMBEDDINGS_MEM_LIMIT:-6g}
+    cpus: "${EMBEDDINGS_CPUS:-2.0}"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+networks:
+  nginx-proxy-manager_default:
+    external: true               # existing NPM network: TLS + public hostname
+  boh-internal:
+    internal: true               # no gateway — the sidecars cannot be reached
+    ipam:
+      config:
+        # Must not overlap NPM's 172.22.0.0/16 or agent-heartbeat's
+        # 172.28.0.0/24 — Docker refuses overlapping pools and the error
+        # arrives at `up`, not at config time.
+        - subnet: 172.31.42.0/24
+
+volumes:
+  boh-data:                      # memory log + state vault (back this up)
+  boh-qdrant:                    # vectors (rebuildable from boh-data)
+  boh-hf-cache:                  # model weights (re-downloadable)

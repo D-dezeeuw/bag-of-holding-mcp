@@ -16,7 +16,10 @@ Model Context Protocol server for [`@zeeuw/bag-of-holding`](https://github.com/D
 - **Rules-correct mechanics for free.** Ability checks, saving throws, attack rolls, damage with crit doubling, weapon mastery dispatch, conditions, exhaustion, XP — all driven by `@zeeuw/bag-of-holding`.
 - **Sessions per game.** One process can serve many concurrent games, each with its own seed and rollLog.
 - **Replay determinism from day one.** Save a seed + rollLog; reconstruct the exact sequence of rolls weeks later.
-- **Boundary-honest.** The server is stateless w.r.t. game state. Character sheets, world memory, NPC continuity stay in the host — exactly where the engine's [boundary doc](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/boundary.md) puts them.
+- **Campaigns that survive the context window.** A namespaced, append-only memory log (`memory_*`) for the story and a state vault (`state_*`) for the numbers — on disk, searchable, exportable. See [Long campaigns](#long-campaigns-memory-saves-worlds-guides).
+- **A world to play in tonight.** The Greyfen March pack (`world_*`): a [Sundermark](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/roadmap.md) frontier province with regions, factions, NPCs, hooks and a GM-only secret ladder, layered so spoilers only ship when asked for.
+- **A DM that knows the drill.** How-to-play guides served as MCP prompts, resources *and* tools (`guide_*`): campaign loop, memory discipline, combat flow, session zero, DM style.
+- **Boundary-honest.** The *engine* stays stateless and pure math; persistence lives here in the host layer — exactly where the engine's [boundary doc](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/boundary.md) puts it.
 
 ## Install
 
@@ -44,7 +47,9 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
 }
 ```
 
-Restart Claude Desktop and the engine's 63 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions) appear automatically. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play.
+Restart Claude Desktop and the server's 90 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
+
+New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks from zero to a running campaign — setup, memory tokens, the session ritual, semantic memory, and how to audit the dice.
 
 ## Tool inventory
 
@@ -63,8 +68,13 @@ Restart Claude Desktop and the engine's 63 tools (dice, checks, combat with the 
 | **SRD lookups** | `srd_list`, `srd_get`, `srd_dump` — registries: species, classes, backgrounds, feats, spells, items, monsters |
 | **Spellcasting** | `spells_for_class`, `spells_classes_for`, `spells_max_level`, `spells_fresh_slots`, `spells_cast`, `spells_rest`, `spells_cantrip_damage` |
 | **Monster tiers** | `monsters_elevate`, `monsters_for_target_cr` |
+| **Memory** | `memory_status`, `memory_record`, `memory_search`, `memory_recent`, `memory_forget`, `memory_export`, `memory_import` |
+| **State vault** | `state_save`, `state_load`, `state_list`, `state_delete` |
+| **World packs** (hand-authored, read-only) | `world_list`, `world_overview`, `world_region`, `world_faction`, `world_npc`, `world_hooks`, `world_secrets`, `world_search` |
+| **World cartridges** (generated, session ledger) | `world_catalog`, `world_begin`, `world_node`, `world_lineage`, `world_commit`, `world_replay` |
+| **Guides** | `guide_list`, `guide_get` |
 
-Every tool accepts an optional `session` parameter; omit it to use the default (unseeded) singleton, fine for one-shot mechanic queries. For an actual campaign, always `engine_create_session({ seed: <int> })` first so rolls are reproducible.
+Every engine tool accepts an optional `session` parameter; omit it to use the default (unseeded) singleton, fine for one-shot mechanic queries. For an actual campaign, always `engine_create_session({ seed: <int> })` first so rolls are reproducible.
 
 ## Sessions and replay
 
@@ -76,6 +86,81 @@ Every tool accepts an optional `session` parameter; omit it to use the default (
 ```
 
 If verification fails it returns `{ ok: false, divergedAt, expected, actual }` — the exact roll the AI claims happened but the engine never produced.
+
+## Long campaigns: memory, saves, worlds, guides
+
+Engine sessions live in RAM; campaigns live on disk. The loop (the `campaign-quickstart` prompt walks the model through it):
+
+```text
+Session one   world_list → world_overview → engine_create_session({ seed })
+              …session zero… → state_save "party" → memory_record (session-summary)
+Every start   state_load "party" → memory_recent({ type: "session-summary" })
+During play   memory_search when a name resurfaces; world_search for canon;
+              memory_record at scene ends and first meetings
+Every end     memory_record (session-summary) → state_save "party" → memory_export (backup)
+```
+
+- **Memory** is an append-only JSONL log per campaign. Search is BM25 over text + double-weighted entities/tags out of the box — zero dependencies, offline, deterministic. Stand up the two sidecars in [`docker-compose.yml`](docker-compose.yml) (Qwen3-Embedding-0.6B behind an OpenAI-compatible endpoint + Qdrant) and the same tool turns **hybrid**: lexical, semantic and importance/recency rankings fused with reciprocal-rank fusion, so "the smuggler kid with the ledger" finds Tally without her name. Sidecars down? Search degrades to lexical on its own and says so (`retrieval` / `semanticError` in the result).
+- **State** is a set of named JSON checkpoints per campaign (party records, a `Session.serialize()` payload, trackers). Memory remembers the story; state remembers the numbers.
+- **Worlds** are static, deep-frozen packs. Public layer by default; `layer: "gm"` (and `world_secrets`) is spoiler material the model is instructed to reveal only through play.
+- **Guides** ship identically as prompts, resources (`boh://guide/<id>`) and tools, because host support varies.
+
+### Running it as a server (remote connector)
+
+Everything above assumes the local stdio path, where the server is a
+subprocess of your AI host and the campaign lives on that machine. It also
+runs as a deployed HTTP service, so the campaign lives on the server and any
+client can reach it:
+
+```bash
+docker compose up -d     # mcp + qdrant + embeddings
+```
+
+The MCP surface is `POST /mcp/<token>` with an open `GET /health`. The token
+in the URL **is** the tenant — it hashes to that table's storage namespace,
+so one deployment serves many tables with no shared state, and the model
+never handles it (the `token` parameter is removed from every memory and
+state tool when the transport pins the tenant). Point Claude Desktop's "Add
+custom connector" at `https://<host>/mcp/<token>`, or
+`claude mcp add --transport http boh https://<host>/mcp/<token>`.
+
+The HTTP entrypoint refuses to start without `BOH_MEMORY_TOKEN_HASHES`, so a
+half-configured deploy fails closed instead of serving every campaign to
+whoever finds the URL. Full walkthrough for the nginx-proxy-manager + CI
+deployment: **[docs/deployment.md](docs/deployment.md)**.
+
+### Storage, tokens and the hosted mode
+
+Data root: `$BOH_DATA_DIR`, default `~/.bag-of-holding` (nothing is written until the first write). Every memory/state tool takes an optional `token` — an **opaque string** that namespaces storage under `t-<sha256(token)[0..16]>`; no token means the shared `local` namespace. Tokens are never stored, only hashed. Use any high-entropy string (`openssl rand -base64 32`); never reuse a real credential (an SSH key, an API key) as a token.
+
+```bash
+BOH_DATA_DIR=~/.bag-of-holding            # storage root
+BOH_MEMORY_TOKEN_HASHES=<sha256>,<sha256> # optional: closed mode
+```
+
+With `BOH_MEMORY_TOKEN_HASHES` set the store runs **closed**: only tokens hashing into the list are accepted, and over HTTP anything unlisted gets a 404 (the same 404 as a wrong path, so the endpoint is not an oracle for guessing tokens). That is also the whole auth story for a hosted tier — a billing site mints random tokens and stores only their hashes. Design and roadmap: [docs/implementation-long-campaign.md](docs/implementation-long-campaign.md).
+
+### Semantic memory (optional sidecars)
+
+```bash
+docker compose up -d                       # Qdrant + Qwen3-Embedding-0.6B (TEI)
+export BOH_EMBEDDINGS_URL=http://localhost:8080/v1
+export BOH_QDRANT_URL=http://localhost:6333
+```
+
+`memory_search` is now hybrid; `memory_status` reports the semantic state. Full knob list — every one optional:
+
+```bash
+BOH_EMBEDDINGS_URL=http://localhost:8080/v1  # OpenAI-compatible /embeddings base; enables semantic search
+BOH_EMBEDDINGS_MODEL=Qwen/Qwen3-Embedding-0.6B
+BOH_EMBEDDINGS_DIM=256                       # Matryoshka truncation, applied client-side
+BOH_EMBEDDINGS_API_KEY=                      # bearer, if your endpoint wants one
+BOH_QDRANT_URL=http://localhost:6333
+BOH_QDRANT_COLLECTION=boh-memory
+BOH_QDRANT_API_KEY=
+```
+
+Multi-tenant by construction: one Qdrant collection, every point tagged with the token-derived namespace (`ns`, a tenant-marked index), every query filtered on it server-side. Raw tokens never reach the sidecars. Vectors back-fill lazily — enable the sidecars mid-campaign and the next search embeds the backlog on its own; forgotten records can never resurface because results are intersected with the live log.
 
 ## Embedding in your own host
 
@@ -92,18 +177,31 @@ await server.connect(new StdioServerTransport());
 const { server: httpServer } = createServer({ sessions });
 ```
 
+For the HTTP surface, `createHttpHandler()` returns a plain Node request
+listener (mount it in your own server), `listen()` starts one, and `main()`
+is the container's whole boot sequence — it returns an exit code instead of
+calling `process.exit`, so it is testable:
+
+```js
+import { createHttpHandler } from '@zeeuw/bag-of-holding-mcp';
+
+const { handler, store } = createHttpHandler({ memory: { dataDir, tokenHashes } });
+http.createServer(handler).listen(8091);
+```
+
 `sessions` is the in-memory session registry; programmatic code can call `sessions.create`, `sessions.rollLog`, etc. without going through MCP tool dispatch.
 
 ## Honest limits
 
-This server exposes the engine. It does **not** give you:
+Since 0.2.0 the server does provide persistent narrative memory, mechanical checkpoints, a starter world and play guides. It still does **not** give you:
 
-- A persistent world, NPC continuity, or scene memory across turns.
-- Encounter design, pacing, or DM judgment.
 - Map state or positioning.
-- Voice consistency for the AI DM.
+- Encounter design or DM judgment — the guides coach the model; the calls stay the model's.
+- Enforced voice consistency — `memory_search` makes consistency *possible*; the model still has to ask.
+- Semantic retrieval without the sidecars — the base server searches lexically (BM25); meaning-based recall needs the [docker sidecars](#semantic-memory-optional-sidecars) up.
+- Automatic recording — nothing is remembered unless the model (or you) calls `memory_record`. The end-of-session ritual in the quickstart guide is what makes a campaign durable.
 
-Those live in the host. The engine is the math; the MCP is the wire; everything else is yours.
+The engine is the math; the MCP is the wire plus the campaign's filing cabinet; the judgment is yours.
 
 ## Development
 

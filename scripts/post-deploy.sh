@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Post-deploy smoke check, invoked by docker/deploy.sh.
+#
+# Three questions: is the MCP surface serving, is the campaign data still
+# readable, and did semantic search actually come up? The third is a warning
+# rather than a failure on purpose — memory search degrades to lexical by
+# design when the sidecars are down, so a slow-booting embedding container
+# is a quality dip, not an outage, and must not read as a failed deploy.
+set -uo pipefail
+
+COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.yml}
+status=0
+dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
+
+echo "    waiting for the MCP surface to answer..."
+for i in $(seq 1 30); do
+  if dc exec -T mcp node -e "
+fetch('http://127.0.0.1:'+(process.env.BOH_HTTP_PORT||8091)+'/health')
+  .then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))
+" 2>/dev/null; then
+    echo "    health OK (after ${i}s)"
+    break
+  fi
+  if [ "$i" = 30 ]; then
+    echo "    WARNING: /health did not answer within 30s"
+    status=1
+  fi
+  sleep 1
+done
+
+# An unknown token must 404, not 500 and not 200. This is the auth boundary
+# for the whole deployment, so assert it on every deploy rather than trusting
+# that nobody loosened it.
+echo "    checking that an unknown token is refused..."
+code=$(dc exec -T mcp node -e "
+fetch('http://127.0.0.1:'+(process.env.BOH_HTTP_PORT||8091)+'/mcp/definitely-not-a-real-token', { method: 'POST' })
+  .then(r => { console.log(r.status); process.exit(0); }).catch(() => { console.log('ERR'); process.exit(0); })
+" 2>/dev/null | tr -d '\r')
+if [ "$code" = "404" ]; then
+  echo "    unknown token rejected (404)"
+else
+  echo "    WARNING: unknown token returned '$code', expected 404"
+  status=1
+fi
+
+# The data volume is the irreplaceable artefact; make sure the container can
+# actually read it (a bad mount or ownership change shows up here, not three
+# sessions later when someone tries to save a party).
+echo "    checking the data volume is readable/writable..."
+if dc exec -T mcp node -e "
+const fs = require('fs'); const dir = process.env.BOH_DATA_DIR || '/data';
+const probe = dir + '/.deploy-probe';
+fs.writeFileSync(probe, String(Date.now())); fs.unlinkSync(probe);
+const tenants = fs.readdirSync(dir).filter(d => d !== 'lost+found');
+console.log('    data dir OK, ' + tenants.length + ' tenant namespace(s)');
+" 2>/dev/null; then
+  :
+else
+  echo "    WARNING: data dir not writable by the container"
+  status=1
+fi
+
+# Semantic search: reachable sidecars mean hybrid retrieval; unreachable means
+# lexical. Report which one this deploy actually landed on.
+echo "    checking the semantic sidecars..."
+dc exec -T mcp node -e "
+const qdrant = process.env.BOH_QDRANT_URL, emb = process.env.BOH_EMBEDDINGS_URL;
+const probe = (name, url) => fetch(url, { signal: AbortSignal.timeout(5000) })
+  .then(r => console.log('    ' + name + ': HTTP ' + r.status))
+  .catch(e => console.log('    ' + name + ': unreachable (' + e.message + ') — search stays lexical'));
+Promise.all([probe('qdrant', qdrant + '/collections'), probe('embeddings', emb.replace(/\/v1\$/, '') + '/health')])
+  .then(() => process.exit(0));
+" 2>/dev/null || echo "    WARNING: could not probe the sidecars"
+
+exit $status

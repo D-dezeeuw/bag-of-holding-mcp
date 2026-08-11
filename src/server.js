@@ -11,9 +11,17 @@
 // The descriptor pattern — each tool file exports a function that
 // returns `[{ name, description, input, handler }, ...]` — is what
 // makes both of those things straightforward.
+//
+// Three registries live behind the tools, with different lifetimes:
+// engine sessions (in-memory, per game sitting), the memory store
+// (on disk, outlives every session — that is its point), and the
+// world packs / guides (static frozen data). The campaign guides
+// are additionally registered as MCP prompts and resources.
 
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createSessions } from './sessions.js';
+import { createMemoryStore } from './memory/store.js';
+import { registerGuides } from './skills/guides.js';
 import { createWorlds } from './worlds.js';
 import { worldsTools } from './tools/worlds.js';
 import { diceTools } from './tools/dice.js';
@@ -29,24 +37,45 @@ import { spellsTools } from './tools/spells.js';
 import { monsterTools } from './tools/monsters.js';
 import { restTools } from './tools/rest.js';
 import { engineTools } from './tools/engine.js';
+import { memoryTools } from './tools/memory.js';
+import { worldTools } from './tools/world.js';
+import { guideTools } from './tools/guides.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.2.0';
+const SERVER_VERSION = '0.3.0';
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.
  *
- * Returns `{ server, sessions }`. The sessions registry is
- * exposed so a programmatic embedder can mint sessions or read
- * rollLogs without going through MCP tool dispatch. Tests use
- * this too.
+ * Returns `{ server, sessions, memory, tools }`. The sessions
+ * registry and memory store are exposed so a programmatic embedder
+ * can mint sessions, read rollLogs, or touch campaign memory
+ * without going through MCP tool dispatch. Tests use this too.
  *
- * @param {{ sessions?: ReturnType<typeof createSessions> }} [opts]
- *   Inject a session registry to share state across multiple
- *   servers (rare — usually you want the default fresh one).
+ * @param {{
+ *   sessions?: ReturnType<typeof createSessions>,
+ *   memory?: import('../index.js').MemoryStoreOptions,
+ *   memoryStore?: ReturnType<typeof createMemoryStore>,
+ *   memoryToken?: string
+ * }} [opts]
+ *   `sessions` injects a shared session registry (rare — usually
+ *   you want the default fresh one). `memory` configures the disk
+ *   store and the optional semantic sidecars (embeddings endpoint +
+ *   Qdrant); omitted, everything resolves from the environment
+ *   (BOH_DATA_DIR, BOH_MEMORY_TOKEN_HASHES, BOH_EMBEDDINGS_*,
+ *   BOH_QDRANT_*) with ~/.bag-of-holding as the default root.
+ *   `memoryStore` injects a prebuilt store instead — the HTTP
+ *   entrypoint builds one per process and shares it across tenants
+ *   (isolation is per call, by token), so the Qdrant and embeddings
+ *   clients are established once rather than per connection.
+ *   `memoryToken` pins the tenant: the `token` parameter is then
+ *   removed from every memory/state tool schema and this value is
+ *   used instead. That is how the HTTP transport keeps the token —
+ *   which lives in the URL path — out of the model's hands.
  */
 export function createServer(opts = {}) {
   const sessions = opts.sessions ?? createSessions();
+  const memory = opts.memoryStore ?? createMemoryStore(opts.memory ?? {});
   const worlds = opts.worlds ?? createWorlds({ dir: opts.worldsDir ?? process.env.BOH_WORLDS_DIR ?? null });
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
@@ -64,12 +93,17 @@ export function createServer(opts = {}) {
     ...srdTools(sessions),
     ...spellsTools(sessions),
     ...monsterTools(sessions),
-    ...restTools(sessions)
+    ...restTools(sessions),
+    ...memoryTools(memory, opts.memoryToken),
+    ...worldTools(),
+    ...guideTools()
   ];
 
   for (const tool of allTools) {
     server.tool(tool.name, tool.description, tool.input, tool.handler);
   }
+
+  registerGuides(server);
 
   // The same read surface as world:// resources, so an MCP host can browse a
   // mounted world with no tool calls at all. Node ids ride in the URI path
@@ -94,5 +128,5 @@ export function createServer(opts = {}) {
       return json(uri, { lineage: out });
     });
 
-  return { server, sessions, worlds, tools: allTools };
+  return { server, sessions, memory, worlds, tools: allTools };
 }
