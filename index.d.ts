@@ -76,12 +76,43 @@ export interface ToolDescriptor {
 }
 
 /**
+ * Registry of mounted world cartridges (pre-generated worlds baked by
+ * @zeeuw/bag-of-holding-client's scripts/bake-world.js) plus the
+ * world-sessions running over them. Cartridges are immutable; a session is
+ * an ordered patch ledger over one, and replay folds that ledger back over
+ * the same base.
+ */
+export interface WorldRegistry {
+  dir: string | null;
+  errors: string[];
+  list(): Array<Record<string, unknown>>;
+  get(id: string): Record<string, unknown> | null;
+  begin(worldId: string): { session: string; worldId: string; digest: string | null; start: string | null } | null;
+  session(id: string): { worldId: string; ledger: unknown[] } | null;
+  node(worldId: string, nodeId: string): Record<string, unknown> | null;
+  lineage(worldId: string, nodeId: string): Array<Record<string, unknown>> | null;
+  commit(sessionId: string, patches: unknown[]): { session: string; ledgerLength: number } | null;
+  replay(sessionId: string, opts?: { upToTurn?: number | null }): Record<string, unknown> | null;
+}
+
+/**
+ * Load world cartridges from a directory (default: BOH_WORLDS_DIR).
+ * A missing dir is not an error — the registry lists empty and says why.
+ */
+export function createWorlds(opts?: { dir?: string | null }): WorldRegistry;
+
+/**
  * Build an MCP server with every bag-of-holding tool registered.
  * The returned `server` is unstarted — call `server.connect(transport)`
  * to attach it (stdio, HTTP, in-memory, …).
  */
-export function createServer(opts?: { sessions?: SessionRegistry }): {
+export function createServer(opts?: {
+  sessions?: SessionRegistry;
+  worlds?: WorldRegistry;
+  worldsDir?: string | null;
+}): {
   server: McpServer;
   sessions: SessionRegistry;
+  worlds: WorldRegistry;
   tools: ToolDescriptor[];
 };

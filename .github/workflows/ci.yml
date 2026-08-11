@@ -42,6 +42,7 @@ jobs:
       - name: Install with the engine from source
         run: |
           npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main"
+          npm pkg set "devDependencies.@zeeuw/bag-of-holding-client"="github:D-dezeeuw/bag-of-holding-client#main"
           npm install --no-package-lock
           # Read the file, not the package path: the engine's `exports` map does
           # not expose ./package.json, so requiring it fails the whole step.
@@ -57,6 +58,12 @@ jobs:
             echo "engine $want is on npm"
           else
             echo "::warning::peerDependencies declares @zeeuw/bag-of-holding@$want, which is not published. CI is green against the engine source, but installing this package will fail for users until that version ships to npm."
+          fi
+          wantClient=$(node -p "require('./package.json').peerDependencies['@zeeuw/bag-of-holding-client']")
+          if npm view "@zeeuw/bag-of-holding-client@$wantClient" version >/dev/null 2>&1; then
+            echo "client $wantClient is on npm"
+          else
+            echo "::warning::peerDependencies declares @zeeuw/bag-of-holding-client@$wantClient, which is not published. CI is green against the client source, but installing this package will fail for users until that version ships to npm."
           fi
 
       - run: npm test
