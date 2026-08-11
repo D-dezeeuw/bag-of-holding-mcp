@@ -119,7 +119,20 @@ services:
     # CX/CPX box. Qwen3 needs TEI >= 1.8.
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     container_name: bag-of-holding-mcp-embeddings
-    command: --model-id ${BOH_EMBEDDINGS_MODEL:-Qwen/Qwen3-Embedding-0.6B} --auto-truncate
+    # --max-batch-tokens is the single biggest lever on this container. TEI
+    # defaults to 16384, sized for a throughput service; warmup runs inference
+    # over a batch that large before it serves anything, which is both the
+    # peak memory allocation of the whole process and minutes of CPU. This
+    # workload is 1-3 sentence memories from one table, so 4096 costs nothing
+    # real and cuts peak memory and warmup time by roughly fourfold.
+    #
+    # Keep it >= 8x the client's batch size (see MAX_BATCH in
+    # src/memory/embedder.js): a single request larger than this ceiling is
+    # rejected outright rather than split, so the two numbers move together.
+    command: >
+      --model-id ${BOH_EMBEDDINGS_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      --auto-truncate
+      --max-batch-tokens ${EMBEDDINGS_MAX_BATCH_TOKENS:-4096}
     volumes:
       - boh-hf-cache:/data        # model downloads once, then cached
     networks:
@@ -136,11 +149,12 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
-    # The big one. 0.6B params plus runtime and batch buffers; this is the
-    # knob to raise if the container OOMs on first load (docker inspect
-    # shows OOMKilled). Everything else in this stack is small precisely so
-    # this can have room.
-    mem_limit: ${EMBEDDINGS_MEM_LIMIT:-6g}
+    # 0.6B of weights is ~2.4 GB; the rest is batch buffers, which the
+    # --max-batch-tokens ceiling above now bounds. 8g is deliberate headroom
+    # rather than a tight fit — the cgroup limit still stops a runaway from
+    # eating the host, but nothing here should ever approach it. Raise it if
+    # `docker inspect … {{.State.OOMKilled}}` ever reports true.
+    mem_limit: ${EMBEDDINGS_MEM_LIMIT:-8g}
     cpus: "${EMBEDDINGS_CPUS:-2.0}"
     logging:
       driver: json-file

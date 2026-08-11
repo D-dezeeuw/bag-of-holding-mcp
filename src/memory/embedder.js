@@ -30,7 +30,13 @@ const QUERY_INSTRUCT =
 // than erroring, because a truncated vector still retrieves.
 const MAX_DOC_CHARS = 2000;
 const MAX_QUERY_CHARS = 500;
-const MAX_BATCH = 32;
+// Documents per HTTP request. Paired with --max-batch-tokens on the serving
+// side (4096 in docker-compose.yml): a request whose total tokens exceed that
+// ceiling is REJECTED, not split, so this must stay small enough that even a
+// worst-case batch fits. 8 docs x MAX_DOC_CHARS (~500 tokens) ≈ 4000, just
+// under. Real memories are 1-3 sentences, so a typical backfill still goes in
+// one request. Raise both numbers together or neither.
+const MAX_BATCH = 8;
 
 /**
  * Truncate to `dim` and L2-normalise (in that order — that is the
