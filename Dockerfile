@@ -9,6 +9,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY package.json ./
+# Force GitHub git traffic onto anonymous HTTPS.
+#
+# npm resolved the `github:owner/repo` shorthand to ssh://git@github.com/… for
+# its `ls-remote`, and this image has no ssh client — the build died on
+# "ssh: not found". Installing openssh-client would NOT fix it: ssh to
+# git@github.com needs a key, and there is no anonymous ssh to GitHub, so it
+# would only trade "not found" for "Permission denied (publickey)".
+#
+# This rewrite sits BELOW npm, at the git layer, so it does not matter which
+# transport npm picks — both spellings of the ssh remote become HTTPS, which
+# needs no credentials for public repos. The specs below ask for https
+# explicitly too; both layers have to fail before this breaks again.
+RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" \
+    && git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 # Promote BOTH sibling packages from dev links (file:../…, which only exist in
 # a side-by-side checkout) to real dependencies fetched from source.
 #
@@ -29,9 +43,9 @@ COPY package.json ./
 # The peer ranges still document intent for consumers installing from npm;
 # they simply have nothing to say inside an image pinned to source.
 RUN npm pkg delete peerDependencies devDependencies \
-    && npm pkg set "dependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main" \
-    && npm pkg set "dependencies.@zeeuw/bag-of-holding-client"="github:D-dezeeuw/bag-of-holding-client#main" \
-    && node -e "const d=require('/build/package.json').dependencies; for (const k of ['@zeeuw/bag-of-holding','@zeeuw/bag-of-holding-client']) if (!d[k].startsWith('github:')) { console.error('FATAL: '+k+' is '+d[k]+', expected a github: spec — peer normalisation clobbered it'); process.exit(1); }" \
+    && npm pkg set "dependencies.@zeeuw/bag-of-holding"="git+https://github.com/D-dezeeuw/bag-of-holding.git#main" \
+    && npm pkg set "dependencies.@zeeuw/bag-of-holding-client"="git+https://github.com/D-dezeeuw/bag-of-holding-client.git#main" \
+    && node -e "const d=require('/build/package.json').dependencies; for (const k of ['@zeeuw/bag-of-holding','@zeeuw/bag-of-holding-client']) if (!d[k].startsWith('git+https://')) { console.error('FATAL: '+k+' is '+d[k]+', expected a git+https: spec — peer normalisation clobbered it'); process.exit(1); }" \
     && npm install --omit=dev --no-package-lock --no-audit --no-fund \
     && node -p "'engine ' + JSON.parse(require('fs').readFileSync('node_modules/@zeeuw/bag-of-holding/package.json')).version + ', client ' + JSON.parse(require('fs').readFileSync('node_modules/@zeeuw/bag-of-holding-client/package.json')).version + ' installed from source'"
 
