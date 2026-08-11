@@ -17,3 +17,4 @@
 
 export { createServer } from './src/server.js';
 export { createSessions } from './src/sessions.js';
+export { createWorlds } from './src/worlds.js';
