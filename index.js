@@ -14,6 +14,14 @@
 // `createSessions` is re-exported so an embedder can share one
 // session registry across multiple server instances (e.g., one
 // MCP-over-HTTP endpoint per region, same in-memory game state).
+// `createMemoryStore` likewise, so a hosted embedder can point
+// several transports at one campaign-memory root (with a token
+// allowlist for the closed, hosted-tier mode). The world packs and
+// guides are exported for hosts that want to render them in a UI
+// without a round-trip through tool dispatch.
 
 export { createServer } from './src/server.js';
 export { createSessions } from './src/sessions.js';
+export { createMemoryStore, MEMORY_TYPES } from './src/memory/store.js';
+export { worlds, getWorld } from './src/world/index.js';
+export { GUIDES } from './src/skills/guides.js';
