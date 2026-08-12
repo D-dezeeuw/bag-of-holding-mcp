@@ -50,6 +50,12 @@ export function createWorlds({ dir = process.env.BOH_WORLDS_DIR ?? null } = {}) 
       id, seed: w.seed, digest: w.digest, v: w.v,
       continents: w.continents.length, provinces: w.provinces.length,
       legends: w.lore.legends.length, outlined: Object.keys(w.outlines ?? {}).length,
+      // The setting is what makes a multi-world catalog readable: tone and
+      // threat alone cannot tell a host that one of these is a sealed shelter
+      // and the next is a fantasy kingdom. null means the library's own
+      // default tables — a cartridge baked before settings existed, or one
+      // deliberately baked without.
+      setting: w.settingId ?? null,
       tone: w.slices?.world?.tone ?? null, threat: w.slices?.world?.threatType ?? null,
     })),
     get,
@@ -64,7 +70,10 @@ export function createWorlds({ dir = process.env.BOH_WORLDS_DIR ?? null } = {}) 
       // The conventional landing: the first port province (mine[0] is always
       // a port by skeleton construction), so hosts start where sea lanes are.
       const start = world.provinces.find(p => world.geo.nodes[p].port) ?? world.provinces[0] ?? null;
-      return { session: id, worldId, digest: world.digest, start };
+      // The setting rides along: a host that mounts a world it did not bake
+      // needs to know which genre it just started before it writes a line of
+      // prose about it.
+      return { session: id, worldId, digest: world.digest, setting: world.settingId ?? null, start };
     },
     session: (id) => sessions.get(id) ?? null,
 

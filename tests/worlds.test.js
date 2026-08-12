@@ -99,3 +99,50 @@ test('a server started without a worlds dir stays calm', async () => {
   const r = await worldsTools(empty).find(t => t.name === 'world_catalog').handler({});
   assert.deepEqual(r.structuredContent.worlds, []);
 });
+
+// ─── Settings ────────────────────────────────────────────────────────────────
+//
+// A catalog of several worlds is unreadable without the setting: 'heroic,
+// water riot' and 'heroic, undead plague' are the same row to a host that
+// cannot see one is a sealed shelter and the other a fantasy kingdom. And a
+// host mounting a world it did not bake needs to know the genre BEFORE it
+// writes a line of prose about it.
+
+test('the catalog and world_begin both name the setting a world was baked under', async () => {
+  const themed = mkdtempSync(join(tmpdir(), 'boh-worlds-themed-'));
+  const cart = await bakeCartridge(4242, {
+    setting: {
+      id: 'deep-shelter',
+      syllables: {
+        continentPrefixes: ['Tess', 'Ander', 'Corr', 'Vale', 'Marn', 'Hess', 'Dol', 'Karn'],
+        continentSuffixes: ['erume', 'sende', 'olar', 'itum', 'anor', 'ellum', 'ayen', 'orra'],
+        provincePrefixes:  ['Dolm', 'Karn', 'Cass', 'Vent', 'Reth', 'Sull', 'Bram', 'Ferr', 'Halt', 'Mord'],
+        provinceSuffixes:  ['hold', 'lock', 'walk', 'deck', 'ward', 'gate', 'rung', 'span', 'tier', 'bay'],
+      },
+      hooks: ['the archive lists it twice, differently'],
+    },
+  });
+  writeFileSync(join(themed, 'world-4242.json'), JSON.stringify(cart));
+  const w2 = createWorlds({ dir: themed });
+  const t2 = worldsTools(w2);
+
+  const cat = await t2.find(t => t.name === 'world_catalog').handler({});
+  assert.equal(cat.structuredContent.worlds[0].setting, 'deep-shelter');
+
+  const begun = await t2.find(t => t.name === 'world_begin').handler({ world: 'world-4242' });
+  assert.equal(begun.structuredContent.setting, 'deep-shelter');
+
+  // The world really is in that setting's vocabulary, not just labelled.
+  const node = await t2.find(t => t.name === 'world_node').handler({
+    world: 'world-4242', node: begun.structuredContent.start,
+  });
+  assert.match(node.structuredContent.node.name, /^(Dolm|Karn|Cass|Vent|Reth|Sull|Bram|Ferr|Halt|Mord)/);
+  assert.equal(node.structuredContent.node.hook, 'the archive lists it twice, differently');
+});
+
+test('a cartridge baked without a setting reports null rather than guessing', async () => {
+  const r = await tool('world_catalog')({});
+  assert.equal(r.structuredContent.worlds[0].setting, null);
+  const b = await tool('world_begin')({ world: 'world-1234' });
+  assert.equal(b.structuredContent.setting, null);
+});
