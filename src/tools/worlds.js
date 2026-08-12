@@ -14,7 +14,7 @@ export function worldsTools(worlds) {
   return [
     {
       name: 'world_catalog',
-      description: 'List the pre-generated world cartridges this server can mount: id, digest (the world\'s identity — model output is frozen at bake time), size, tone, threat. Empty plus a note when the server was started without a worlds directory.',
+      description: 'List the pre-generated world cartridges this server can mount: id, digest (the world\'s identity — model output is frozen at bake time), size, setting (which genre it was baked under; null = the library defaults), tone, threat. Empty plus a note when the server was started without a worlds directory.',
       input: {},
       handler: async () => {
         try {
@@ -24,7 +24,7 @@ export function worldsTools(worlds) {
     },
     {
       name: 'world_begin',
-      description: 'Start a fresh session over a cartridge: the same immutable base, an empty patch ledger — nothing is copied and the cartridge is never written. Returns { session, digest, start } where start is the conventional landing (the first port province).',
+      description: 'Start a fresh session over a cartridge: the same immutable base, an empty patch ledger — nothing is copied and the cartridge is never written. Returns { session, digest, setting, start } — `setting` names the genre the world was baked under so a host knows what voice to write in, and `start` is the conventional landing (the first port province).',
       input: { world: WorldField },
       handler: async ({ world }) => {
         try {
