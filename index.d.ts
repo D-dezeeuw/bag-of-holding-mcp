@@ -221,7 +221,75 @@ export interface MemoryStore {
     keys: Array<{ key: string; bytes: number; savedAt: number }>;
   };
   stateDelete(token: string | undefined, campaign: string, key: string): { deleted: string };
+  /**
+   * The campaign's scene-image gate (permission + budget), or null when it
+   * has never been set or the file is unreadable. Stored beside the state
+   * vault rather than inside it, so `state_save` cannot rewrite a budget.
+   */
+  imageGateLoad(token: string | undefined, campaign: string): ImageGate | null;
+  imageGateSave(token: string | undefined, campaign: string, gate: ImageGate): ImageGate;
 }
+
+/**
+ * Persisted scene-image gate. The shape is owned by
+ * `@zeeuw/bag-of-holding-client`'s `llm/imagegate.js`, which is also where
+ * every transition (enable, spend, refund, window roll) lives; this server
+ * only stores it and reads it back.
+ */
+export interface ImageGate {
+  v: number;
+  enabled: boolean;
+  tier: string;
+  budget: number;
+  windowMs: number;
+  cooldownMs: number;
+  spent: number;
+  windowStart: number;
+  lastRenderAt: number;
+  renders: number;
+}
+
+/** Image-model configuration, or null when this server holds no key. */
+export interface ImageConfig {
+  key: string;
+  baseUrl: string;
+  model: string;
+}
+
+/**
+ * Read BOH_IMAGE_API_KEY / BOH_IMAGE_URL / BOH_IMAGE_MODEL from an
+ * environment. Null means this deployment renders nothing and
+ * `image_observe` hands back a grant for the host to redeem instead.
+ */
+export function resolveImageConfig(env?: Record<string, string | undefined>): ImageConfig | null;
+
+/**
+ * Which image tier a caller plays on. Server-resolved (BOH_IMAGE_TIER today,
+ * a per-token lookup once tokens name a paid tier) — never model-supplied.
+ */
+export function tierFor(token: string | undefined, env?: Record<string, string | undefined>): string;
+
+/**
+ * Split a `data:<mime>;base64,<body>` URI into the parts an MCP image content
+ * block needs. Null for anything else — a provider answering with a plain URL
+ * counts as "no image" rather than shipping broken base64 to the host.
+ */
+export function splitDataUri(uri: unknown): { mimeType: string; data: string } | null;
+
+/** The image model used when BOH_IMAGE_MODEL is unset. */
+export const DEFAULT_IMAGE_MODEL: string;
+/** The API base used when BOH_IMAGE_URL is unset. */
+export const DEFAULT_IMAGE_BASE_URL: string;
+
+/** Render one prompt. Never rejects: failures come back as `{ ok: false, error }`. */
+export function renderImage(
+  config: ImageConfig | null,
+  prompt: string,
+  deps?: { generate?: (config: { key: string; baseUrl: string }, opts: { prompt: string; model: string }) => Promise<string | null> }
+): Promise<
+  | { ok: true; model: string; mimeType: string; data: string; bytes: number }
+  | { ok: false; error: string }
+>;
 
 /** Create a memory store rooted at a data directory. */
 export function createMemoryStore(opts?: MemoryStoreOptions): MemoryStore;
@@ -330,6 +398,16 @@ export function createServer(opts?: {
    * transport keeps the URL-path token out of the model's hands.
    */
   memoryToken?: string;
+  /**
+   * Scene-image seam: `env` supplies BOH_IMAGE_* (defaults to the process
+   * environment), while `now` and `render` let tests drive the budget clock
+   * and the provider without either.
+   */
+  images?: {
+    env?: Record<string, string | undefined>;
+    now?: () => number;
+    render?: typeof renderImage;
+  };
   worlds?: WorldRegistry;
   worldsDir?: string | null;
 }): {

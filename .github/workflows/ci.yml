@@ -39,10 +39,30 @@ jobs:
       # dependency lets one resolution satisfy both — the github tarball's own
       # package.json reports the engine's current version, which the caret
       # peer range accepts as long as the major matches.
+      #
+      # Which ref of a sibling: the branch under test if that repo has one by
+      # the same name, otherwise main. The three repos move together, so a
+      # feature that spans two of them (a client module the server imports)
+      # would otherwise be untestable until the client half merged — CI would
+      # resolve `#main`, miss the new export, and fail on an import error that
+      # says nothing about the change. Same branch name = same feature is the
+      # convention here already; this just teaches CI to read it.
       - name: Install with the engine from source
+        env:
+          SIBLING_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
-          npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#main"
-          npm pkg set "devDependencies.@zeeuw/bag-of-holding-client"="github:D-dezeeuw/bag-of-holding-client#main"
+          sibling_ref() {
+            if git ls-remote --exit-code --heads "https://github.com/D-dezeeuw/$1.git" "$SIBLING_BRANCH" >/dev/null 2>&1; then
+              echo "$SIBLING_BRANCH"
+            else
+              echo "main"
+            fi
+          }
+          engine_ref=$(sibling_ref bag-of-holding)
+          client_ref=$(sibling_ref bag-of-holding-client)
+          echo "engine ref: $engine_ref, client ref: $client_ref"
+          npm pkg set "devDependencies.@zeeuw/bag-of-holding"="github:D-dezeeuw/bag-of-holding#$engine_ref"
+          npm pkg set "devDependencies.@zeeuw/bag-of-holding-client"="github:D-dezeeuw/bag-of-holding-client#$client_ref"
           npm install --no-package-lock
           # Read the file, not the package path: the engine's `exports` map does
           # not expose ./package.json, so requiring it fails the whole step.

@@ -25,6 +25,28 @@ export function toolResult(data) {
 }
 
 /**
+ * Wrap a rendered image plus its metadata as an MCP tool response.
+ *
+ * The image rides as a real MCP `image` content block, so a host renders it
+ * inline instead of printing a wall of base64 at the player. The metadata goes
+ * out as text and `structuredContent` exactly like every other tool — minus the
+ * pixels: repeating a megabyte of base64 in two more places would triple the
+ * payload and push the model's context out for a picture it cannot read anyway.
+ *
+ * @param {{ data: string, mimeType: string }} image  base64 body + its MIME type
+ * @param {object} data  the tool payload (budget left, prompt used, model, …)
+ */
+export function imageResult(image, data) {
+  return {
+    content: [
+      { type: 'image', data: image.data, mimeType: image.mimeType },
+      { type: 'text', text: JSON.stringify(data, null, 2) }
+    ],
+    structuredContent: data
+  };
+}
+
+/**
  * Wrap an error as an MCP tool response with `isError: true`.
  *
  * Why we don't just throw: the MCP SDK does catch thrown errors,
