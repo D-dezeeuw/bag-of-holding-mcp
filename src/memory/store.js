@@ -181,6 +181,8 @@ export function createMemoryStore(opts = {}) {
   const campaignDir = (ns, campaign) => path.join(dataDir, ns, campaign);
   const memoryFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'memory.jsonl');
   const stateDir = (ns, campaign) => path.join(campaignDir(ns, campaign), 'state');
+  // Outside `state/` on purpose — see `imageGateLoad` below.
+  const imageGateFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'image-gate.json');
 
   /**
    * Read a campaign's op log. Corrupt lines (a torn write, a hand
@@ -532,6 +534,37 @@ export function createMemoryStore(opts = {}) {
       }
       fs.unlinkSync(file);
       return { deleted: key };
+    },
+
+    /**
+     * Read the campaign's image gate, or null when it has never been set.
+     *
+     * Deliberately NOT a state-vault key: `state_save` takes an arbitrary key
+     * and arbitrary JSON, so a gate living there would be a budget the model
+     * could rewrite ("state_save image-gate { budget: 999 }"). It gets its own
+     * file beside the vault instead, reachable only through the image tools.
+     * A corrupt file reads as null — the gate then heals to "off", which is
+     * the safe direction to fail in.
+     */
+    imageGateLoad(token, campaign) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      const file = imageGateFile(ns, campaign);
+      if (!fs.existsSync(file)) return null;
+      try {
+        return JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch {
+        return null;
+      }
+    },
+
+    /** Write the campaign's image gate. Last write wins; it is a counter, not a log. */
+    imageGateSave(token, campaign, gate) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      fs.mkdirSync(campaignDir(ns, campaign), { recursive: true });
+      fs.writeFileSync(imageGateFile(ns, campaign), JSON.stringify(gate, null, 2), 'utf8');
+      return gate;
     }
   };
 }

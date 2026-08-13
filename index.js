@@ -35,4 +35,8 @@ export { GUIDES } from './src/skills/guides.js';
 // Named apart (`worldPacks`) at the export boundary because both modules
 // wanted the identifier `worlds`.
 export { createWorlds } from './src/worlds.js';
+// Scene images: the config/tier seams and the renderer. The *gate* — whether a
+// picture may be made at all — deliberately lives in @zeeuw/bag-of-holding-client
+// (llm/imagegate.js), because the browser host enforces the same budget.
+export { resolveImageConfig, tierFor, renderImage, splitDataUri, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_BASE_URL } from './src/images.js';
 export { worlds as worldPacks, getWorld } from './src/world/index.js';

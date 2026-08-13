@@ -49,6 +49,16 @@ services:
       BOH_EMBEDDINGS_DIM: ${BOH_EMBEDDINGS_DIM:-256}
       BOH_QDRANT_URL: http://qdrant:6333
       BOH_QDRANT_COLLECTION: ${BOH_QDRANT_COLLECTION:-boh-memory}
+      # Scene images. Rendering is opt-in: with no key the image tools still
+      # gate and budget, they just hand the prompt back for the client to
+      # render. Uncomment the key to render server-side instead — that spends
+      # your account for every connected table, which is exactly what the
+      # per-campaign budget is protecting. `:?` and not `:-`, for the same
+      # reason as the Qdrant key below: an empty string is not "off", absent
+      # is, so an uncommented-but-unset key must fail loudly.
+      # BOH_IMAGE_API_KEY: ${BOH_IMAGE_API_KEY:?set it in .env to render images server-side}
+      BOH_IMAGE_MODEL: ${BOH_IMAGE_MODEL:-google/gemini-2.5-flash-image}
+      BOH_IMAGE_TIER: ${BOH_IMAGE_TIER:-free}
       # BOH_QDRANT_API_KEY is intentionally absent — see the qdrant service.
       # Uncomment BOTH lines together if you ever enable the key.
       # BOH_QDRANT_API_KEY: ${QDRANT_API_KEY}

@@ -184,6 +184,34 @@ that doesn't. If a player suspects the DM of mercy (or malice), the
 log settles it. This only works if the session was **seeded**, which
 is why the quickstart insists.
 
+## 7b. Asking to see it (`/observe`)
+
+Images are off in every new campaign, on purpose: an AI DM with an
+unbounded image tool illustrates every paragraph, and each picture
+costs roughly what forty-seven text turns do. When you want them:
+
+> Turn on scene images for this campaign.
+
+That calls `image_enable`. From then on, *you* ask for pictures —
+
+> Observe the chapel.
+
+— and the DM calls `image_observe` once, for that moment. The rules
+it plays under (free tier: six per hour, with a cooldown between
+them) hold whatever the model would prefer: switching images off and
+on again doesn't refill anything, and the budget file sits outside
+the state vault so no other tool can write a bigger one. When the
+gate refuses, the DM says so and keeps narrating.
+
+Whether you get a picture in the chat or a prompt to render depends
+on the server. One started with `BOH_IMAGE_API_KEY` set calls the
+image model itself and the picture appears inline. One without a key
+hands back the art direction plus a one-shot grant, for an app that
+holds your own API key to render — the budget is spent either way,
+so a grant can't be hoarded. `image_status` tells you which you're
+talking to (`renderer: "server"` or `"host"`), how many renders are
+left, and when the window refills.
+
 ## 8. More tables, more players, one server
 
 - **Several campaigns, one person:** same token, different campaign

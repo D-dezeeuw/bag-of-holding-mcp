@@ -77,19 +77,21 @@ test('the full tool surface is served over HTTP', async () => {
   const client = await connect(TOKEN_A);
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 90);
+    assert.equal(tools.length, 94);
     for (const expected of ['dice_roll', 'memory_record', 'world_overview', 'guide_get', 'state_save']) {
       assert.ok(tools.some((t) => t.name === expected), `missing ${expected}`);
     }
   } finally { await client.close(); }
 });
 
-test('the token is absent from every memory/state schema — the model cannot see or leak it', async () => {
+test('the token is absent from every tenant-scoped schema — the model cannot see or leak it', async () => {
   const client = await connect(TOKEN_A);
   try {
     const { tools } = await client.listTools();
-    const scoped = tools.filter((t) => t.name.startsWith('memory_') || t.name.startsWith('state_'));
-    assert.equal(scoped.length, 11);
+    // Memory, the state vault and the image budget are all per tenant, so all
+    // three take the token from the URL rather than from the model.
+    const scoped = tools.filter((t) => /^(memory_|state_|image_)/.test(t.name));
+    assert.equal(scoped.length, 15);
     for (const tool of scoped) {
       const props = Object.keys(tool.inputSchema.properties ?? {});
       assert.ok(!props.includes('token'), `${tool.name} still exposes a token parameter`);

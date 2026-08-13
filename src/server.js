@@ -40,9 +40,10 @@ import { engineTools } from './tools/engine.js';
 import { memoryTools } from './tools/memory.js';
 import { worldTools } from './tools/world.js';
 import { guideTools } from './tools/guides.js';
+import { imageTools } from './tools/images.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.3.7';
+const SERVER_VERSION = '0.4.0';
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.
@@ -56,7 +57,8 @@ const SERVER_VERSION = '0.3.7';
  *   sessions?: ReturnType<typeof createSessions>,
  *   memory?: import('../index.js').MemoryStoreOptions,
  *   memoryStore?: ReturnType<typeof createMemoryStore>,
- *   memoryToken?: string
+ *   memoryToken?: string,
+ *   images?: { env?: Record<string, string|undefined>, now?: () => number, render?: Function }
  * }} [opts]
  *   `sessions` injects a shared session registry (rare — usually
  *   you want the default fresh one). `memory` configures the disk
@@ -72,6 +74,12 @@ const SERVER_VERSION = '0.3.7';
  *   removed from every memory/state tool schema and this value is
  *   used instead. That is how the HTTP transport keeps the token —
  *   which lives in the URL path — out of the model's hands.
+ *   `images` is the scene-image seam: `env` (defaults to the
+ *   process environment) supplies BOH_IMAGE_* — the key that
+ *   decides whether this server renders pictures itself or hands
+ *   back a grant for the client to render — while `now` and
+ *   `render` exist so tests can drive the budget clock and the
+ *   provider without either.
  */
 export function createServer(opts = {}) {
   const sessions = opts.sessions ?? createSessions();
@@ -95,6 +103,7 @@ export function createServer(opts = {}) {
     ...monsterTools(sessions),
     ...restTools(sessions),
     ...memoryTools(memory, opts.memoryToken),
+    ...imageTools(memory, opts.memoryToken, opts.images ?? {}),
     ...worldTools(),
     ...guideTools()
   ];
