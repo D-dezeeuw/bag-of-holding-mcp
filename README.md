@@ -48,7 +48,7 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
 }
 ```
 
-Restart Claude Desktop and the server's 99 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack, the scene-image gate and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
+Restart Claude Desktop and the server's 100 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack, the scene-image gate and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
 
 New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks from zero to a running campaign — setup, memory tokens, the session ritual, semantic memory, and how to audit the dice.
 
@@ -73,7 +73,7 @@ New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks fr
 | **Campaigns** (the session-start surface) | `campaign_list`, `campaign_delete` |
 | **State vault** | `state_save`, `state_load`, `state_list`, `state_delete` |
 | **World packs** (hand-authored, read-only) | `world_list`, `world_overview`, `world_region`, `world_faction`, `world_npc`, `world_hooks`, `world_secrets`, `world_search` |
-| **World cartridges** (generated; the playthrough — pin + patch ledger — persists per campaign in the token namespace) | `world_catalog`, `world_begin`, `world_node`, `world_powers`, `world_lineage`, `world_revisions`, `world_upgrade`, `world_commit`, `world_replay` |
+| **World cartridges** (generated; the playthrough — pin + patch ledger — persists per campaign in the token namespace) | `world_catalog`, `world_begin`, `world_node`, `world_powers`, `world_lineage`, `world_revisions`, `world_upgrade`, `world_export`, `world_commit`, `world_replay` |
 | **Scene images** | `image_status`, `image_enable`, `image_disable`, `image_observe` |
 | **Guides** | `guide_list`, `guide_get` |
 
