@@ -24,10 +24,7 @@
 import { z } from 'zod';
 import { toolResult, toolError } from '../_result.js';
 import { MEMORY_TYPES } from '../memory/store.js';
-
-const TokenField = z.string().optional().describe(
-  'Memory token — an opaque string that namespaces your storage (never stored, only hashed). Omit it for the shared local namespace. Required when the server runs with a token allowlist (hosted mode). Treat it like a password; never write it into memory records.'
-);
+import { tenantFields } from './_tenant.js';
 
 const CampaignField = z.string().describe(
   'Campaign name, e.g. "curse-of-the-fen". 1-64 chars of A-Za-z0-9_- (it becomes a folder name). Use one campaign name per table and stick to it.'
@@ -50,13 +47,9 @@ const TypeField = z.enum(MEMORY_TYPES).describe(
  *                      schema and this value is used instead.
  */
 export function memoryTools(store, pinnedToken) {
-  const pinned = typeof pinnedToken === 'string' && pinnedToken !== '';
-  // Spread into each schema: `{}` when pinned, so the field is
-  // absent rather than present-and-ignored. An ignored parameter
-  // the model can still fill in is an invitation to leak a secret
-  // into the transcript.
-  const tokenField = pinned ? {} : { token: TokenField };
-  const tokenOf = pinned ? () => pinnedToken : (args) => args.token;
+  // Tenancy plumbing shared with the image and world tools — see _tenant.js
+  // for why the field vanishes entirely when the transport pins the token.
+  const { tokenField, tokenOf } = tenantFields(pinnedToken);
 
   return [
     {

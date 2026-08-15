@@ -35,6 +35,10 @@ export { GUIDES } from './src/skills/guides.js';
 // Named apart (`worldPacks`) at the export boundary because both modules
 // wanted the identifier `worlds`.
 export { createWorlds } from './src/worlds.js';
+// Playthroughs: the campaign↔world binding layer — persisted per tenant
+// through the memory store, which is what lets a campaign survive restarts
+// and (over HTTP) span requests. The campaign name is the playthrough id.
+export { createPlaythroughs } from './src/playthroughs.js';
 // Scene images: the config/tier seams and the renderer. The *gate* — whether a
 // picture may be made at all — deliberately lives in @zeeuw/bag-of-holding-client
 // (llm/imagegate.js), because the browser host enforces the same budget.

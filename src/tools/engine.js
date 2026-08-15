@@ -46,11 +46,21 @@ export function engineTools(sessions) {
     },
     {
       name: 'engine_get_roll_log',
-      description: 'Read a session\'s append-only rollLog. Each entry is { index, op, ...payload, context? }. Pass through to engine_verify_log to prove replay-determinism.',
-      input: { session: SessionField.optional() },
-      handler: async ({ session }) => {
+      description: 'Read a session\'s append-only rollLog. Each entry is { index, op, ...payload, context? }. Paged: by default the NEWEST 500 entries return, with { total, offset } saying where you are — an 80-hour campaign\'s log is several thousand entries and multi-megabyte whole. For a full audit (engine_verify_log needs the complete log from entry 0), page with offset until offset + rollLog.length === total.',
+      input: {
+        session: SessionField.optional(),
+        offset: z.number().int().min(0).optional().describe('Start index into the log (0 = oldest). Omit to get the newest entries.'),
+        limit: z.number().int().min(1).max(2000).optional().describe('Max entries to return (default 500).'),
+      },
+      handler: async ({ session, offset, limit }) => {
         try {
-          return toolResult({ rollLog: sessions.rollLog(session) });
+          const log = sessions.rollLog(session);
+          const cap = limit ?? 500;
+          // No offset → the tail (the rolls the table just made); an explicit
+          // offset → a forward window, for paging from 0 to verify.
+          const start = offset ?? Math.max(0, log.length - cap);
+          const page = log.slice(start, start + cap);
+          return toolResult({ rollLog: page, total: log.length, offset: start });
         } catch (err) { return toolError(err); }
       }
     },

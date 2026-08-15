@@ -1,16 +1,36 @@
-// World tools — mount pre-generated worlds, run sessions over them, replay
-// finished campaigns. The read surface is also exposed as world:// resources
-// (registered in server.js) so an MCP host can browse a world with no tool
-// calls at all; the tools exist for hosts that only speak tools.
+// World tools — mount pre-generated worlds, run playthroughs over them,
+// replay finished campaigns. The read surface is also exposed as world://
+// resources (registered in server.js) so an MCP host can browse a world with
+// no tool calls at all; the tools exist for hosts that only speak tools.
+//
+// A playthrough is addressed by CAMPAIGN NAME — the same name the memory
+// log, the state vault and the image gate already use — and persists in the
+// token namespace beside them. The old `ws-N` session ids were process-local
+// (and, over the stateless HTTP transport, request-local: world_begin
+// followed by world_commit could not work at all); campaign-as-id is what
+// makes a playthrough survive both.
 
 import { z } from 'zod';
 import { toolResult, toolError } from '../_result.js';
+import { tenantFields } from './_tenant.js';
 
 const WorldField = z.string().describe('World id from world_catalog, e.g. "world-1234".');
 const NodeField = z.string().describe('Node id inside the world tree, e.g. "continent-0.province-1".');
-const SessionField = z.string().describe('World-session id from world_begin (not an engine session).');
+const CampaignField = z.string().describe(
+  'Campaign name, e.g. "curse-of-the-fen" — the same one your memory_record and state_save calls use. The playthrough (pin + patch ledger) persists under it.'
+);
 
-export function worldsTools(worlds) {
+/**
+ * Build the world tool descriptors.
+ *
+ * @param worlds        read-only cartridge registry (src/worlds.js)
+ * @param playthroughs  the campaign↔world binding layer (src/playthroughs.js)
+ * @param pinnedToken   when set (HTTP transport), the tenant is fixed and the
+ *                      `token` parameter vanishes from every schema, exactly
+ *                      as it does for the memory and image tools
+ */
+export function worldsTools(worlds, playthroughs, pinnedToken) {
+  const { tokenField, tokenOf } = tenantFields(pinnedToken);
   return [
     {
       name: 'world_catalog',
@@ -24,23 +44,24 @@ export function worldsTools(worlds) {
     },
     {
       name: 'world_begin',
-      description: 'Start a fresh session over a cartridge: the same immutable base, an empty patch ledger — nothing is copied and the cartridge is never written. Returns { session, digest, setting, start } — `setting` names the genre the world was baked under so a host knows what voice to write in, and `start` is the conventional landing (the first port province).',
-      input: { world: WorldField },
-      handler: async ({ world }) => {
+      description: 'Bind this campaign to a cartridge and start playing over it: the same immutable base, an empty patch ledger — nothing is copied and the cartridge is never written. The binding persists on disk under the campaign name (it survives restarts and reconnects) and records the world\'s digest as a pin. One campaign, one world: beginning twice is refused. Returns { campaign, worldId, digest, setting, start } — `setting` names the genre so a host knows what voice to write in, `start` is the conventional landing (the first port province), frozen into the pin.',
+      input: { ...tokenField, campaign: CampaignField, world: WorldField },
+      handler: async (args) => {
         try {
-          const out = worlds.begin(world);
-          return out ? toolResult(out) : toolError(new Error(`unknown world '${world}' — call world_catalog first`));
+          return toolResult(playthroughs.begin(tokenOf(args), args.campaign, args.world));
         } catch (err) { return toolError(err); }
       }
     },
     {
       name: 'world_node',
-      description: 'Everything the cartridge knows about one node: the tree record (name, kind, detail, climate…), its baked outline if the bake hydrated one, its blueprint slice, its crown, and every legend bound at or above it. Detail 0/1 content only — full hydration happens at the table with the host\'s own model.',
-      input: { world: WorldField, node: NodeField },
-      handler: async ({ world, node }) => {
+      description: 'Everything the cartridge knows about one node: the tree record (name, kind, detail, climate…), its baked outline if the bake hydrated one, its blueprint slice, its crown, and every legend bound at or above it. Detail 0/1 content only — full hydration happens at the table with the host\'s own model. Pass `campaign` when the party is actually THERE: the node is then recorded as observed, which is what protects it from being rewritten under the table by a future world revision.',
+      input: { ...tokenField, world: WorldField, node: NodeField, campaign: CampaignField.optional() },
+      handler: async (args) => {
         try {
-          const out = worlds.node(world, node);
-          return out ? toolResult(out) : toolError(new Error(`unknown node '${node}' in '${world}'`));
+          const out = worlds.node(args.world, args.node);
+          if (!out) return toolError(new Error(`unknown node '${args.node}' in '${args.world}'`));
+          if (args.campaign) playthroughs.observeRead(tokenOf(args), args.campaign, args.node);
+          return toolResult(out);
         } catch (err) { return toolError(err); }
       }
     },
@@ -57,9 +78,10 @@ export function worldsTools(worlds) {
     },
     {
       name: 'world_commit',
-      description: 'Append play patches to a world-session\'s ledger (the campaign record). Patches follow the client ledger shape: { turn, target, scope, kind, path, to, because?, source? }. The cartridge base is never touched — this ledger IS the campaign.',
+      description: 'Append play patches to the campaign\'s world ledger (the campaign record). Patches follow the client ledger shape: { turn, target, scope, kind, path, to, because?, source? }. Every patch is validated on the way in — bad paths, bad targets, and canon that contradicts recorded mechanical state are rejected individually with reasons while the rest of the batch lands, so check `rejected` in the result. The cartridge base is never touched — this ledger IS the campaign.',
       input: {
-        session: SessionField,
+        ...tokenField,
+        campaign: CampaignField,
         patches: z.array(z.object({
           turn: z.number(),
           target: z.string(),
@@ -71,24 +93,25 @@ export function worldsTools(worlds) {
           source: z.string().nullish(),
         })).describe('Ordered patches to append.'),
       },
-      handler: async ({ session, patches }) => {
+      handler: async (args) => {
         try {
-          const out = worlds.commit(session, patches.map(p => ({ from: null, chapter: null, because: null, source: null, ...p })));
-          return out ? toolResult(out) : toolError(new Error(`unknown world-session '${session}'`));
+          const raw = args.patches.map(p => ({ from: null, chapter: null, because: null, source: null, ...p }));
+          return toolResult(playthroughs.commit(tokenOf(args), args.campaign, raw));
         } catch (err) { return toolError(err); }
       }
     },
     {
       name: 'world_replay',
-      description: 'Playback: fold the session\'s ordered patch ledger over the immutable cartridge base and return the folded state — the whole campaign, or history up to a turn with upToTurn. The same ledger over the same cartridge digest reproduces the same campaign byte for byte; spectating, post-mortems, and resume-anywhere all fall out of this one call.',
+      description: 'Playback: fold the campaign\'s ordered patch ledger over the immutable cartridge base and return the folded state — the whole campaign, or history up to a turn with upToTurn. Cartridge entities replay over their real baked content (a renamed province replays with its name, slice and your changes together); entities the table invented fold from their patches alone. The same ledger over the same cartridge digest reproduces the same campaign byte for byte.',
       input: {
-        session: SessionField,
+        ...tokenField,
+        campaign: CampaignField,
         upToTurn: z.number().optional().describe('Replay only patches with turn <= this. Omit for the full campaign.'),
       },
-      handler: async ({ session, upToTurn }) => {
+      handler: async (args) => {
         try {
-          const out = worlds.replay(session, { upToTurn });
-          return out ? toolResult(out) : toolError(new Error(`unknown world-session '${session}'`));
+          const out = playthroughs.replay(tokenOf(args), args.campaign, { upToTurn: args.upToTurn });
+          return out ? toolResult(out) : toolError(new Error(`campaign "${args.campaign}" has no world; call world_begin first`));
         } catch (err) { return toolError(err); }
       }
     },
