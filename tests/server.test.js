@@ -120,7 +120,7 @@ test('guides are served as MCP prompts and resources over a real client connecti
     // more may follow; a total-count assertion would break on every one.
     const { resources } = await client.listResources();
     const guides = resources.filter((r) => r.uri.startsWith('boh://guide/'));
-    assert.equal(guides.length, 5);
+    assert.equal(guides.length, 6);
     for (const resource of guides) {
       const { contents } = await client.readResource({ uri: resource.uri });
       assert.equal(contents[0].mimeType, 'text/markdown');
