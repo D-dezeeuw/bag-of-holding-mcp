@@ -340,6 +340,66 @@ horns), then let consequences land as rolled. Never undo a die for
 drama and never soften a death save — protecting players from the
 dice teaches them the dice don't matter. The one thing you protect
 absolutely is the table contract from session zero.`
+  },
+
+  'war-thread': {
+    title: 'Preset: the war thread',
+    description: 'A ready campaign shape over any generated world: a peasant in one power\'s land grows into the hero who crosses the sea to defeat the King of the power at war with their home.',
+    text: `# Preset: the war thread
+
+Every generated world bakes the same load-bearing facts: at least
+two powers with a genuine enmity, a war with a cause and a front,
+crowns seated by factions, and a face on every power. That means
+this campaign shape works on ANY cartridge — pick a world, cast the
+premise from what it actually holds, and play:
+
+> You are a peasant in one power's land. The power across the sea
+> is at war with your home. You will grow into the hero who makes
+> the crossing and defeats their King — with lore all the way.
+
+## Casting the premise (session zero)
+
+1. \`world_catalog\` → pick a world → \`world_begin\` (new campaigns
+   take the latest revision automatically).
+2. \`world_powers\` — find the war: an entry in \`warState.wars\`.
+   Call the aggressor A and the defender B. The players start as
+   commoners in B's territory (\`world_begin\` already landed them
+   at the first port; check whose territory it is and lean in).
+3. The target: the npc whose \`leads\` is A and whose \`role\` is
+   \`sovereign\` — the King. Their \`seatOf\` names the crown, the
+   crown id names the province, and that province is in A's own
+   territory: the place the whole campaign points at. Record all
+   three ids with \`state_save\` key \`"thread"\` so beats and
+   payoffs can bind to them by id, never by name.
+4. Read the King's \`voice\` and \`wants\` — perform the voice from
+   the first rumor onward, and let the wants drive the war.
+
+## Running it
+
+- **Acts, not a script.** Act 1: the war reaches the village (the
+  front provinces from \`warState\` are where it is FELT). Act 2:
+  the road and the sea — the crossing is gated on a ship, which is
+  the act's prize. Act 3+: A's heartland, the court, the King.
+- **The world moves while they travel.** Track the war as a clock
+  in \`state_save\` (segments by intensity: cold 8, raiding 6,
+  open 4). Every long journey ticks it by the journey's days; when
+  it fills, escalate the intensity with \`world_commit\` (target
+  \`world\`, path \`warState.wars.<i>.intensity\`) and let the
+  players hear the news on arrival. The recap writes itself.
+- **Reputation ripples.** Striking at A warms B toward the party
+  and chills A's allies — keep a reputation map in state and move
+  both sides on every open move.
+- **Lore pays.** Every legend of the crossing continents is a
+  planted clue; bind payoffs to the thread ids from step 3 so
+  "the seal none of the elders recognise" is checkably the King's.
+
+## Endgame honesty
+
+Defeating the King is a fact the world records: \`world_commit\`
+the crown's legitimacy turning (target the crown id, path
+\`crown.legitimacy\`) and the war's end. A replay of the campaign
+folds those patches over the cartridge — the fall of a throne
+becomes canon the same way every smaller fact did.`
   }
 });
 

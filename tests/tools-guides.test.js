@@ -8,11 +8,11 @@ const tools = guideTools();
 const byName = new Map(tools.map((t) => [t.name, t]));
 const run = async (name, args = {}) => parse(await byName.get(name).handler(args));
 
-test('guide_list names the five guides with usable summaries', async () => {
+test('guide_list names the six guides with usable summaries', async () => {
   const { data } = await run('guide_list');
   assert.deepEqual(
     data.guides.map((g) => g.id).sort(),
-    ['campaign-quickstart', 'combat-flow', 'dm-style', 'memory-protocol', 'session-zero']
+    ['campaign-quickstart', 'combat-flow', 'dm-style', 'memory-protocol', 'session-zero', 'war-thread']
   );
   for (const g of data.guides) assert.ok(g.title && g.description);
 });
@@ -25,6 +25,15 @@ test('guide_get serves full markdown that references the real tool names', async
   }
   const protocol = await run('guide_get', { id: 'memory-protocol' });
   assert.ok(protocol.data.text.includes('memory_forget'));
+});
+
+test('the war-thread preset casts the premise from real tool surfaces', async () => {
+  const { data } = await run('guide_get', { id: 'war-thread' });
+  // The preset must drive the same ids the engine holds: powers, the
+  // sovereign face, the war state paths world_commit can actually write.
+  for (const mention of ['world_powers', 'world_begin', 'warState.wars', 'seatOf', 'crown.legitimacy', 'state_save']) {
+    assert.ok(data.text.includes(mention), `war-thread should mention ${mention}`);
+  }
 });
 
 test('guide_get rejects unknown ids with the available list', async () => {
