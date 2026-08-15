@@ -18,7 +18,10 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { mountCartridge, catalogEntry, cellsOf, ancestorsOf } from '@zeeuw/bag-of-holding-client';
+import {
+  mountCartridge, catalogEntry, cellsOf, ancestorsOf,
+  mountRevision, applyRevisions, resolvedDigest,
+} from '@zeeuw/bag-of-holding-client';
 
 /**
  * Load every world-*.json in `dir` and return the read-only registry the
@@ -28,12 +31,13 @@ import { mountCartridge, catalogEntry, cellsOf, ancestorsOf } from '@zeeuw/bag-o
  */
 export function createWorlds({ dir = process.env.BOH_WORLDS_DIR ?? null } = {}) {
   const worlds = new Map();     // id → { envelope, mounted }
+  const revisionFiles = new Map(); // worldId → Map(revision → filename)
   const errors = [];
   if (dir) {
     let files = [];
-    // `[^.]` rather than `.`: revision sidecars (a future world-1234.r2.json)
-    // and any other dotted name must never be mistaken for a base cartridge —
-    // one bad mount would take the whole catalog down at list() time.
+    // `[^.]` rather than `.`: revision sidecars (world-1234.r2.json) and any
+    // other dotted name must never be mistaken for a base cartridge — one
+    // bad mount would take the whole catalog down at list() time.
     try { files = readdirSync(dir).filter(f => /^world-[^.]+\.json$/.test(f)); }
     catch (err) { errors.push(`worlds dir '${dir}': ${err.message}`); }
     for (const f of files) {
@@ -46,9 +50,83 @@ export function createWorlds({ dir = process.env.BOH_WORLDS_DIR ?? null } = {}) 
         if (mounted) worlds.set(id, { envelope: JSON.parse(raw), mounted });
       } catch (err) { errors.push(`${f}: ${err.message}`); }
     }
+    // Revisions live in their own subdirectory, never beside the bases.
+    // Filenames index them (`world-1234.r2.json` → revision 2 of world-1234);
+    // the artifacts themselves are mounted lazily, on first resolve.
+    let revFiles = [];
+    try { revFiles = readdirSync(join(dir, 'revisions')).filter(f => /^world-[^.]+\.r[1-9]\d*\.json$/.test(f)); }
+    catch { /* no revisions directory is the common case, not an error */ }
+    for (const f of revFiles) {
+      const m = f.match(/^(world-[^.]+)\.r([1-9]\d*)\.json$/);
+      if (!worlds.has(m[1])) { errors.push(`revisions/${f}: no base cartridge ${m[1]}.json on the shelf`); continue; }
+      if (!revisionFiles.has(m[1])) revisionFiles.set(m[1], new Map());
+      revisionFiles.get(m[1]).set(Number(m[2]), f);
+    }
   }
 
   const get = (id) => worlds.get(id)?.mounted ?? null;
+
+  // The contiguous revision ladder for one world: [0, 1, …] up to the first
+  // gap. A missing rung strands everything above it (r3 without r2 was
+  // authored against content this shelf cannot reconstruct) — record the
+  // truncation once, at load-shape time, so the catalog tells the truth.
+  const revisionsOf = (worldId) => {
+    if (!worlds.has(worldId)) return null;
+    const have = revisionFiles.get(worldId);
+    const ladder = [0];
+    for (let r = 1; have?.has(r); r++) ladder.push(r);
+    if (have && have.size > ladder.length - 1) {
+      const stranded = [...have.keys()].filter(r => !ladder.includes(r)).sort((a, b) => a - b);
+      errors.push(`${worldId}: revisions ${stranded.join(', ')} are stranded above a gap (highest servable: ${ladder.at(-1)})`);
+      for (const r of stranded) have.delete(r);   // report once, then forget
+    }
+    return ladder;
+  };
+
+  // resolve(worldId, revision) — the world's data AT a revision, lazily
+  // computed and cached forever (both inputs are immutable artifacts, so the
+  // cache can never go stale). null revision = latest servable. A revision
+  // whose chain refuses (base-digest mismatch) resolves to null and records
+  // why; the ladder above it is truncated so `latest` stays honest.
+  const resolved = new Map();   // `${worldId}@${revision}` → { revision, data, digest }
+  const resolve = (worldId, revision = null) => {
+    const w = worlds.get(worldId);
+    if (!w) return null;
+    const ladder = revisionsOf(worldId);
+    const target = revision ?? ladder.at(-1);
+    if (!ladder.includes(target)) return null;
+    const key = `${worldId}@${target}`;
+    if (resolved.has(key)) return resolved.get(key);
+
+    let out = null;
+    if (target === 0) {
+      out = { revision: 0, data: w.envelope.data, digest: w.envelope.c };
+    } else {
+      const chain = [];
+      for (let r = 1; r <= target; r++) {
+        const f = revisionFiles.get(worldId)?.get(r);
+        const mounted = f ? mountRevision(readFileSync(join(dir, 'revisions', f), 'utf8'), {
+          onError: (code, detail) => errors.push(`revisions/${f}: ${code} ${detail ?? ''}`.trim()),
+        }) : null;
+        if (!mounted) break;
+        chain.push(mounted);
+      }
+      const applied = applyRevisions(w.envelope.data, chain, {
+        onError: (code, detail) => errors.push(`${worldId}: ${code} ${detail ?? ''}`.trim()),
+      });
+      if (applied.applied.length === target) {
+        out = { revision: target, data: applied.data, digest: resolvedDigest(applied.data) };
+      } else {
+        // The chain refused below the target: truncate the ladder there so
+        // latest() never points at a revision this shelf cannot serve.
+        const servable = applied.applied.at(-1) ?? 0;
+        const have = revisionFiles.get(worldId);
+        for (const r of [...(have?.keys() ?? [])]) if (r > servable) have.delete(r);
+      }
+    }
+    resolved.set(key, out);
+    return out;
+  };
 
   return {
     dir, errors,
@@ -58,20 +136,30 @@ export function createWorlds({ dir = process.env.BOH_WORLDS_DIR ?? null } = {}) 
     // near-copy, and the two had already drifted apart — the copy had lost
     // `name`). Only `id` is layered on top, because here the id is the
     // filename stem, not the seed.
-    list: () => [...worlds.entries()].map(([id, w]) => catalogEntry(w.envelope, { id })),
+    list: () => [...worlds.entries()].map(([id, w]) => {
+      const ladder = revisionsOf(id);
+      return { ...catalogEntry(w.envelope, { id }), revisions: ladder, latest: ladder.at(-1) };
+    }),
+    // UNCHANGED semantics: get() means revision 0, forever. Making it mean
+    // "latest" would move every existing reader onto new content — exactly
+    // the bug pinning exists to prevent. Latest is selected explicitly, at
+    // the browse/begin boundary only.
     get,
+    revisionsOf,
+    resolve,
+    latest: (worldId) => revisionsOf(worldId)?.at(-1) ?? null,
 
     /**
      * The fold base for one entity of one world — what the cartridge says
-     * about it, as cells. Replay folds a campaign's ledger over this, so
-     * cartridge entities replay over their real content and invented
-     * entities (an NPC the table met) fold from nothing. Null for an
-     * unknown world; {} for an unknown entity (that IS the fold base for
-     * something the cartridge has never heard of).
+     * about it AT a revision, as cells. Replay folds a campaign's ledger
+     * over this, so cartridge entities replay over their real content and
+     * invented entities (an NPC the table met) fold from nothing. Null for
+     * an unknown world or unservable revision; {} for an unknown entity
+     * (that IS the fold base for something the world has never heard of).
      */
-    cell(worldId, entityId) {
-      const w = worlds.get(worldId);
-      return w ? cellsOf(w.envelope.data, entityId) : null;
+    cell(worldId, entityId, revision = 0) {
+      const r = resolve(worldId, revision);
+      return r ? cellsOf(r.data, entityId) : null;
     },
 
     /**

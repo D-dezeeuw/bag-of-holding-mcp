@@ -43,21 +43,34 @@ export function createPlaythroughs(worlds, store) {
      * read: a future revision that inserts an earlier port must not silently
      * move an existing campaign's landing.
      */
-    begin(token, campaign, worldId) {
+    begin(token, campaign, worldId, { revision = null } = {}) {
       const world = worlds.get(worldId);
       if (!world) {
         throw new Error(`unknown world '${worldId}' — call world_catalog first`);
       }
-      const start = world.provinces.find(p => world.geo.nodes[p].port) ?? world.provinces[0] ?? null;
+      // A NEW campaign defaults to the latest servable revision; an explicit
+      // number pins exactly that rung. Either way the resolution is frozen
+      // into the pin — this campaign never moves again unless it explicitly
+      // upgrades.
+      const at = worlds.resolve(worldId, revision);
+      if (!at) {
+        throw new Error(`world '${worldId}' has no servable revision ${revision} — world_revisions shows the ladder`);
+      }
+      const start = at.data.provinces.find(p => at.data.geo.nodes[p].port) ?? at.data.provinces[0] ?? null;
       const pin = store.worldBind(token, campaign, {
         v: 1,
         worldId,
-        digest: world.digest,
+        revision: at.revision,
+        digest: at.digest,
+        baseDigest: world.digest,
         setting: world.settingId ?? null,
         start,
         upgrades: [],
       });
-      return { campaign, worldId, digest: pin.digest, setting: pin.setting, start: pin.start };
+      return {
+        campaign, worldId, revision: pin.revision, digest: pin.digest,
+        setting: pin.setting, start: pin.start,
+      };
     },
 
     /** The campaign's pin, or null when it has never begun a world. */
@@ -95,7 +108,7 @@ export function createPlaythroughs(worlds, store) {
         if (!validTarget(patch.target)) {
           return rejected.push({ index, reason: `invalid target id '${patch.target}'` });
         }
-        const bases = { [patch.target]: worlds.cell(pin.worldId, patch.target) ?? {} };
+        const bases = { [patch.target]: worlds.cell(pin.worldId, patch.target, pin.revision ?? 0) ?? {} };
         const out = appendPatch(ledger, patch, bases);
         if (!out.ok) {
           return rejected.push({ index, reason: out.reason, conflict: out.conflict ?? null });
@@ -128,15 +141,22 @@ export function createPlaythroughs(worlds, store) {
         // so; do not fold over nothing and call it the world.
         throw new Error(`campaign "${campaign}" is pinned to '${pin.worldId}', which this server no longer mounts`);
       }
+      if (!worlds.resolve(pin.worldId, pin.revision ?? 0)) {
+        // Same honesty one level up: the base is here but the pinned
+        // revision's chain no longer resolves (a revision file was removed
+        // or its base digest stopped matching).
+        throw new Error(`campaign "${campaign}" is pinned to '${pin.worldId}' revision ${pin.revision}, which this shelf can no longer resolve`);
+      }
       const all = store.worldLedger(token, campaign).patches;
       const patches = upToTurn == null ? all : all.filter(p => p.turn <= upToTurn);
       const state = {};
       for (const target of new Set(patches.map(p => p.target))) {
-        state[target] = fold(worlds.cell(pin.worldId, target) ?? {}, patches, target);
+        state[target] = fold(worlds.cell(pin.worldId, target, pin.revision ?? 0) ?? {}, patches, target);
       }
       return {
         campaign,
         worldId: pin.worldId,
+        revision: pin.revision ?? 0,
         digest: pin.digest,
         turns: patches.length ? Math.max(...patches.map(p => p.turn)) : 0,
         applied: patches.length,

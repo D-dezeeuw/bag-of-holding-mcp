@@ -392,15 +392,22 @@ export interface ToolDescriptor {
 export interface WorldRegistry {
   dir: string | null;
   errors: string[];
-  /** One row per world, shaped by the client's catalogEntry (id layered on top). */
+  /** One row per world: the client's catalogEntry plus { revisions, latest }. */
   list(): Array<Record<string, unknown>>;
+  /** ALWAYS revision 0 — latest is selected explicitly, never implicitly. */
   get(id: string): Record<string, unknown> | null;
+  /** The contiguous revision ladder ([0] with no revisions), or null. */
+  revisionsOf(worldId: string): number[] | null;
+  /** The world's data at a revision (null = latest servable), cached forever. */
+  resolve(worldId: string, revision?: number | null): { revision: number; data: Record<string, unknown>; digest: string } | null;
+  latest(worldId: string): number | null;
   /**
-   * The fold base for one entity: what the cartridge says about it, as
-   * cells (client cellsOf). Null for an unknown world; {} for an entity
-   * the cartridge has never heard of — which IS its fold base.
+   * The fold base for one entity: what the world says about it AT a
+   * revision (default 0), as cells (client cellsOf). Null for an unknown
+   * world or unservable revision; {} for an entity the world has never
+   * heard of — which IS its fold base.
    */
-  cell(worldId: string, entityId: string): Record<string, unknown> | null;
+  cell(worldId: string, entityId: string, revision?: number): Record<string, unknown> | null;
   powers(worldId: string): {
     factions: Array<Record<string, unknown>>;
     warState: Record<string, unknown> | null;
@@ -428,7 +435,11 @@ export function createWorlds(opts?: { dir?: string | null }): WorldRegistry;
 export interface WorldPin {
   v: number;
   worldId: string;
+  /** The revision the campaign is pinned to. Absent on pre-revision pins (read as 0). */
+  revision?: number;
   digest: string | null;
+  /** The base cartridge's own digest (revision 0), for shelf-drift tripwires. */
+  baseDigest?: string | null;
   setting: string | null;
   start: string | null;
   upgrades: Array<Record<string, unknown>>;
@@ -441,9 +452,13 @@ export interface WorldPin {
  * restarts and (over HTTP) spans requests.
  */
 export interface Playthroughs {
-  /** Bind a campaign to a world. Throws if already bound or the world is unknown. */
-  begin(token: string | undefined, campaign: string, worldId: string): {
-    campaign: string; worldId: string; digest: string | null;
+  /**
+   * Bind a campaign to a world at a revision (null = latest servable).
+   * Throws if already bound, the world is unknown, or the revision is
+   * unservable. The resolution is frozen into the pin.
+   */
+  begin(token: string | undefined, campaign: string, worldId: string, opts?: { revision?: number | null }): {
+    campaign: string; worldId: string; revision: number; digest: string | null;
     setting: string | null; start: string | null;
   };
   pin(token: string | undefined, campaign: string): WorldPin | null;

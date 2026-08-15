@@ -44,11 +44,27 @@ export function worldsTools(worlds, playthroughs, pinnedToken) {
     },
     {
       name: 'world_begin',
-      description: 'Bind this campaign to a cartridge and start playing over it: the same immutable base, an empty patch ledger — nothing is copied and the cartridge is never written. The binding persists on disk under the campaign name (it survives restarts and reconnects) and records the world\'s digest as a pin. One campaign, one world: beginning twice is refused. Returns { campaign, worldId, digest, setting, start } — `setting` names the genre so a host knows what voice to write in, `start` is the conventional landing (the first port province), frozen into the pin.',
-      input: { ...tokenField, campaign: CampaignField, world: WorldField },
+      description: 'Bind this campaign to a cartridge and start playing over it: the same immutable base, an empty patch ledger — nothing is copied and the cartridge is never written. The binding persists on disk under the campaign name (it survives restarts and reconnects) and records the world\'s digest as a pin. One campaign, one world: beginning twice is refused. A new campaign defaults to the LATEST revision on the shelf; pass `revision` to pin an earlier one explicitly. Either way the campaign stays pinned there forever — later revisions never move a running game. Returns { campaign, worldId, revision, digest, setting, start } — `setting` names the genre so a host knows what voice to write in, `start` is the conventional landing (the first port province), frozen into the pin.',
+      input: {
+        ...tokenField, campaign: CampaignField, world: WorldField,
+        revision: z.number().int().min(0).optional().describe('Pin this exact revision instead of the latest. world_revisions shows the ladder.'),
+      },
       handler: async (args) => {
         try {
-          return toolResult(playthroughs.begin(tokenOf(args), args.campaign, args.world));
+          return toolResult(playthroughs.begin(tokenOf(args), args.campaign, args.world,
+            { revision: args.revision ?? null }));
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
+      name: 'world_revisions',
+      description: 'The revision ladder for one world: which revisions this shelf can serve ([0] for a base with no revisions), and which is latest. A revision is a published delta over the base cartridge — running campaigns stay pinned to the revision they began on; new campaigns default to latest. A ladder shorter than the files on disk means a gap or a base-digest mismatch truncated it — the registry errors say which.',
+      input: { world: WorldField },
+      handler: async ({ world }) => {
+        try {
+          const revisions = worlds.revisionsOf(world);
+          if (!revisions) return toolError(new Error(`unknown world '${world}'`));
+          return toolResult({ world, revisions, latest: revisions.at(-1) });
         } catch (err) { return toolError(err); }
       }
     },
