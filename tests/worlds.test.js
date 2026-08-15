@@ -1,8 +1,10 @@
-// World tools — cartridges mounted, sessions over immutable bases, playback.
+// World tools — cartridges mounted, playthroughs over immutable bases,
+// playback.
 //
 // Bakes a real cartridge with the client (dev-linked, same as the engine) into
 // a temp dir, then drives the registry and the tool handlers directly — the
-// same no-transport pattern every other tool test here uses.
+// same no-transport pattern every other tool test here uses. Playthroughs
+// persist through a memory store rooted in another temp dir.
 
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,18 +14,22 @@ import { join } from 'node:path';
 
 import { bakeCartridge } from '@zeeuw/bag-of-holding-client';
 import { createWorlds } from '../src/worlds.js';
+import { createMemoryStore } from '../src/memory/store.js';
+import { createPlaythroughs } from '../src/playthroughs.js';
 import { worldsTools } from '../src/tools/worlds.js';
 import { createServer } from '../src/server.js';
 
 let dir, worlds, tools;
 const tool = (name) => tools.find(t => t.name === name).handler;
+const freshTools = (w) => worldsTools(w,
+  createPlaythroughs(w, createMemoryStore({ dataDir: mkdtempSync(join(tmpdir(), 'boh-pt-')), tokenHashes: [] })));
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'boh-worlds-'));
   const cart = await bakeCartridge(1234);
   writeFileSync(join(dir, 'world-1234.json'), JSON.stringify(cart));
   worlds = createWorlds({ dir });
-  tools = worldsTools(worlds);
+  tools = freshTools(worlds);
 });
 
 test('world_catalog lists mounted cartridges with their digest identity', async () => {
@@ -36,14 +42,18 @@ test('world_catalog lists mounted cartridges with their digest identity', async 
   assert.deepEqual(worlds.errors, []);
 });
 
-test('world_begin starts a fresh session at the first port; unknown worlds error', async () => {
-  const r = await tool('world_begin')({ world: 'world-1234' });
-  const { session, digest, start } = r.structuredContent;
-  assert.match(session, /^ws-/);
+test('world_begin binds the campaign at the first port; unknown worlds error', async () => {
+  const r = await tool('world_begin')({ campaign: 'fen-begin', world: 'world-1234' });
+  const { campaign, digest, start } = r.structuredContent;
+  assert.equal(campaign, 'fen-begin');
   assert.equal(digest, worlds.get('world-1234').digest);
   assert.ok(worlds.get('world-1234').geo.nodes[start].port);
-  const bad = await tool('world_begin')({ world: 'world-9' });
+  const bad = await tool('world_begin')({ campaign: 'fen-bad', world: 'world-9' });
   assert.equal(bad.isError, true);
+  // One campaign, one world: beginning twice is refused, not silently rebound.
+  const twice = await tool('world_begin')({ campaign: 'fen-begin', world: 'world-1234' });
+  assert.equal(twice.isError, true);
+  assert.match(twice.content[0].text, /already bound/);
 });
 
 test('world_node serves the tree record, slice, crown, and bound legends', async () => {
@@ -68,17 +78,19 @@ test('world_lineage walks root-down', async () => {
 });
 
 test('world_commit + world_replay: the ledger over the base is the campaign', async () => {
-  const { session } = (await tool('world_begin')({ world: 'world-1234' })).structuredContent;
-  await tool('world_commit')({ session, patches: [
+  await tool('world_begin')({ campaign: 'fen-play', world: 'world-1234' });
+  const committed = (await tool('world_commit')({ campaign: 'fen-play', patches: [
     { turn: 1, target: 'npc.vera', scope: 'local', kind: 'canon', path: 'mood', to: 'wary' },
     { turn: 2, target: 'npc.vera', scope: 'local', kind: 'mechanical', path: 'hp', to: 7 },
     { turn: 3, target: 'npc.vera', scope: 'local', kind: 'canon', path: 'mood', to: 'grateful' },
-  ]});
-  const full = (await tool('world_replay')({ session })).structuredContent;
+  ]})).structuredContent;
+  assert.equal(committed.appended, 3);
+  assert.deepEqual(committed.rejected, []);
+  const full = (await tool('world_replay')({ campaign: 'fen-play' })).structuredContent;
   assert.equal(full.applied, 3);
   assert.equal(full.state['npc.vera'].mood, 'grateful');
   assert.equal(full.state['npc.vera'].hp, 7);
-  const early = (await tool('world_replay')({ session, upToTurn: 1 })).structuredContent;
+  const early = (await tool('world_replay')({ campaign: 'fen-play', upToTurn: 1 })).structuredContent;
   assert.equal(early.applied, 1);
   assert.equal(early.state['npc.vera'].mood, 'wary');
   assert.equal(early.state['npc.vera'].hp, undefined);
@@ -86,8 +98,61 @@ test('world_commit + world_replay: the ledger over the base is the campaign', as
   assert.equal(worlds.get('world-1234').digest, full.digest);
 });
 
+test('replay folds cartridge entities over their REAL content, not over {}', async () => {
+  const w = worlds.get('world-1234');
+  const pId = w.provinces[0];
+  await tool('world_begin')({ campaign: 'fen-fold', world: 'world-1234' });
+  await tool('world_commit')({ campaign: 'fen-fold', patches: [
+    { turn: 1, target: pId, scope: 'regional', kind: 'canon', path: 'node.mood', to: 'uneasy' },
+  ]});
+  const r = (await tool('world_replay')({ campaign: 'fen-fold' })).structuredContent;
+  // The patch landed…
+  assert.equal(r.state[pId].node.mood, 'uneasy');
+  // …ON the cartridge's own record, which is still all there.
+  assert.equal(r.state[pId].node.name, w.geo.nodes[pId].name);
+  assert.equal(r.state[pId].slice.climate, w.slices[pId].climate);
+});
+
+test('world_commit validates each patch and keeps the good ones', async () => {
+  await tool('world_begin')({ campaign: 'fen-valid', world: 'world-1234' });
+  const r = (await tool('world_commit')({ campaign: 'fen-valid', patches: [
+    { turn: 1, target: 'npc.tally', path: 'mood', to: 'watchful' },
+    { turn: 1, target: 'npc.tally', path: '__proto__.polluted', to: 1 },
+    { turn: 2, target: 'not a legal id!', path: 'mood', to: 'x' },
+    { turn: 2, target: 'npc.tally', kind: 'mechanical', path: 'hp', to: 4 },
+    { turn: 3, target: 'npc.tally', kind: 'canon', path: 'hp', to: 99 },
+  ]})).structuredContent;
+  assert.equal(r.appended, 2, 'the two clean patches landed');
+  assert.equal(r.rejected.length, 3);
+  assert.match(r.rejected[0].reason, /forbidden/);
+  assert.match(r.rejected[1].reason, /invalid target/);
+  assert.match(r.rejected[2].reason, /mechanical/);
+  const replay = (await tool('world_replay')({ campaign: 'fen-valid' })).structuredContent;
+  assert.equal(replay.state['npc.tally'].hp, 4, 'canon never overwrote mechanical truth');
+});
+
+test('a playthrough survives a fresh registry + store over the same disk', async () => {
+  const ptDir = mkdtempSync(join(tmpdir(), 'boh-pt-restart-'));
+  const build = () => worldsTools(createWorlds({ dir }),
+    createPlaythroughs(createWorlds({ dir }), createMemoryStore({ dataDir: ptDir, tokenHashes: [] })));
+  const first = build();
+  await first.find(t => t.name === 'world_begin').handler({ campaign: 'fen-restart', world: 'world-1234' });
+  await first.find(t => t.name === 'world_commit').handler({ campaign: 'fen-restart', patches: [
+    { turn: 1, target: 'npc.vera', path: 'mood', to: 'wary' },
+  ]});
+  // "The server restarted": everything rebuilt from disk.
+  const second = build();
+  const r = (await second.find(t => t.name === 'world_replay').handler({ campaign: 'fen-restart' })).structuredContent;
+  assert.equal(r.applied, 1);
+  assert.equal(r.state['npc.vera'].mood, 'wary');
+  assert.equal(r.worldId, 'world-1234');
+});
+
 test('createServer registers the world tools and world:// resources', () => {
-  const { tools: all, worlds: w } = createServer({ worldsDir: dir });
+  const { tools: all, worlds: w } = createServer({
+    worldsDir: dir,
+    memory: { dataDir: mkdtempSync(join(tmpdir(), 'boh-srv-')), tokenHashes: [] },
+  });
   for (const name of ['world_catalog', 'world_begin', 'world_node', 'world_lineage', 'world_commit', 'world_replay']) {
     assert.ok(all.some(t => t.name === name), name);
   }
@@ -96,7 +161,7 @@ test('createServer registers the world tools and world:// resources', () => {
 
 test('a server started without a worlds dir stays calm', async () => {
   const empty = createWorlds({ dir: null });
-  const r = await worldsTools(empty).find(t => t.name === 'world_catalog').handler({});
+  const r = await freshTools(empty).find(t => t.name === 'world_catalog').handler({});
   assert.deepEqual(r.structuredContent.worlds, []);
 });
 
@@ -124,12 +189,12 @@ test('the catalog and world_begin both name the setting a world was baked under'
   });
   writeFileSync(join(themed, 'world-4242.json'), JSON.stringify(cart));
   const w2 = createWorlds({ dir: themed });
-  const t2 = worldsTools(w2);
+  const t2 = freshTools(w2);
 
   const cat = await t2.find(t => t.name === 'world_catalog').handler({});
   assert.equal(cat.structuredContent.worlds[0].setting, 'deep-shelter');
 
-  const begun = await t2.find(t => t.name === 'world_begin').handler({ world: 'world-4242' });
+  const begun = await t2.find(t => t.name === 'world_begin').handler({ campaign: 'shelter', world: 'world-4242' });
   assert.equal(begun.structuredContent.setting, 'deep-shelter');
 
   // The world really is in that setting's vocabulary, not just labelled.
@@ -143,6 +208,6 @@ test('the catalog and world_begin both name the setting a world was baked under'
 test('a cartridge baked without a setting reports null rather than guessing', async () => {
   const r = await tool('world_catalog')({});
   assert.equal(r.structuredContent.worlds[0].setting, null);
-  const b = await tool('world_begin')({ world: 'world-1234' });
+  const b = await tool('world_begin')({ campaign: 'fen-setting', world: 'world-1234' });
   assert.equal(b.structuredContent.setting, null);
 });

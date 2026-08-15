@@ -221,6 +221,22 @@ export interface MemoryStore {
     keys: Array<{ key: string; bytes: number; savedAt: number }>;
   };
   stateDelete(token: string | undefined, campaign: string, key: string): { deleted: string };
+  /** The campaign's world pin (see WorldPin), or null when unbound / corrupt. */
+  worldPin(token: string | undefined, campaign: string): WorldPin | null;
+  /** Bind a campaign to a world. Throws when a pin file already exists. */
+  worldBind(token: string | undefined, campaign: string, pin: WorldPin): WorldPin;
+  /** Replace the pin (the upgrade path's writer); appends `audit` to its trail. */
+  worldRebind(token: string | undefined, campaign: string, pin: WorldPin, audit?: Record<string, unknown>): WorldPin;
+  /** Append validated patches to the campaign's world ledger. */
+  worldAppend(token: string | undefined, campaign: string, patches: unknown[]): { appended: number };
+  /** Read the world ledger, oldest first; corrupt lines counted, never fatal. */
+  worldLedger(token: string | undefined, campaign: string): { patches: Array<Record<string, unknown>>; corruptLinesSkipped: number };
+  /** The observation set: entityId → { paths: string[] | '*', turn }. */
+  worldObserved(token: string | undefined, campaign: string): Record<string, { paths: string[] | '*'; turn: number }>;
+  /** Record observations ({ id, path?, turn? }); '*' marks the whole entity. */
+  worldObserve(token: string | undefined, campaign: string, entries: Array<{ id: string; path?: string; turn?: number }>): Record<string, unknown>;
+  /** Every campaign in the namespace with a world pin. */
+  worldBindings(token: string | undefined): Array<{ campaign: string; pin: WorldPin }>;
   /**
    * The campaign's scene-image gate (permission + budget), or null when it
    * has never been set or the file is unreadable. Stored beside the state
@@ -355,23 +371,27 @@ export interface ToolDescriptor {
 }
 
 /**
- * Registry of mounted world cartridges (pre-generated worlds baked by
- * @zeeuw/bag-of-holding-client's scripts/bake-world.js) plus the
- * world-sessions running over them. Cartridges are immutable; a session is
- * an ordered patch ledger over one, and replay folds that ledger back over
- * the same base.
+ * Read-only registry of mounted world cartridges (pre-generated worlds
+ * baked by @zeeuw/bag-of-holding-client's scripts/bake-world.js).
+ * Cartridges are immutable and this registry holds NO play state —
+ * playthroughs live in the memory store's token namespace (see
+ * Playthroughs), because a process Map dies with the process, and over
+ * the stateless HTTP transport "the process" is one request.
  */
 export interface WorldRegistry {
   dir: string | null;
   errors: string[];
+  /** One row per world, shaped by the client's catalogEntry (id layered on top). */
   list(): Array<Record<string, unknown>>;
   get(id: string): Record<string, unknown> | null;
-  begin(worldId: string): { session: string; worldId: string; digest: string | null; start: string | null } | null;
-  session(id: string): { worldId: string; ledger: unknown[] } | null;
+  /**
+   * The fold base for one entity: what the cartridge says about it, as
+   * cells (client cellsOf). Null for an unknown world; {} for an entity
+   * the cartridge has never heard of — which IS its fold base.
+   */
+  cell(worldId: string, entityId: string): Record<string, unknown> | null;
   node(worldId: string, nodeId: string): Record<string, unknown> | null;
   lineage(worldId: string, nodeId: string): Array<Record<string, unknown>> | null;
-  commit(sessionId: string, patches: unknown[]): { session: string; ledgerLength: number } | null;
-  replay(sessionId: string, opts?: { upToTurn?: number | null }): Record<string, unknown> | null;
 }
 
 /**
@@ -379,6 +399,57 @@ export interface WorldRegistry {
  * A missing dir is not an error — the registry lists empty and says why.
  */
 export function createWorlds(opts?: { dir?: string | null }): WorldRegistry;
+
+// ============================================================
+// Playthroughs
+// ============================================================
+
+/**
+ * A campaign's world binding: pinned at world_begin and stored in the
+ * tenant namespace beside the memory log. `upgrades` is the audit trail
+ * of explicit re-pins (empty until the revision feature lands).
+ */
+export interface WorldPin {
+  v: number;
+  worldId: string;
+  digest: string | null;
+  setting: string | null;
+  start: string | null;
+  upgrades: Array<Record<string, unknown>>;
+}
+
+/**
+ * The campaign↔world binding layer. THE CAMPAIGN NAME IS THE PLAYTHROUGH
+ * ID: one campaign, one world, one pin, one append-only patch ledger —
+ * all persisted through the memory store, so a playthrough survives
+ * restarts and (over HTTP) spans requests.
+ */
+export interface Playthroughs {
+  /** Bind a campaign to a world. Throws if already bound or the world is unknown. */
+  begin(token: string | undefined, campaign: string, worldId: string): {
+    campaign: string; worldId: string; digest: string | null;
+    setting: string | null; start: string | null;
+  };
+  pin(token: string | undefined, campaign: string): WorldPin | null;
+  /**
+   * Validate and append play patches. Partial acceptance: each patch goes
+   * through the client's makePatch + appendPatch against the cartridge
+   * cells, and failures land in `rejected` with reasons while the rest of
+   * the batch commits.
+   */
+  commit(token: string | undefined, campaign: string, patches: unknown[]): {
+    appended: number;
+    rejected: Array<{ index: number; reason: string; conflict?: unknown }>;
+    ledgerLength: number;
+  };
+  /** Fold the campaign's ledger over the pinned cartridge's cells. Null when unbound. */
+  replay(token: string | undefined, campaign: string, opts?: { upToTurn?: number | null }): Record<string, unknown> | null;
+  /** Record that the party has seen a node whole (feeds the future revision publish gate). */
+  observeRead(token: string | undefined, campaign: string, nodeId: string): void;
+}
+
+/** Build the playthrough layer over a world registry and the memory store. */
+export function createPlaythroughs(worlds: WorldRegistry, store: MemoryStore): Playthroughs;
 
 /**
  * Build an MCP server with every bag-of-holding tool registered,
@@ -415,6 +486,7 @@ export function createServer(opts?: {
   sessions: SessionRegistry;
   memory: MemoryStore;
   worlds: WorldRegistry;
+  playthroughs: Playthroughs;
   tools: ToolDescriptor[];
 };
 
@@ -430,6 +502,13 @@ export function createServer(opts?: {
 export interface HttpOptions {
   memory?: MemoryStoreOptions;
   memoryStore?: MemoryStore;
+  /**
+   * One worlds registry for the whole process (or a directory to build one
+   * from). Hoisted here deliberately: without it, every request would
+   * re-read and re-mount every cartridge from disk.
+   */
+  worlds?: WorldRegistry;
+  worldsDir?: string | null;
 }
 
 /**

@@ -34,11 +34,8 @@ import {
   composeImagePrompt, IMAGE_TIERS,
 } from '@zeeuw/bag-of-holding-client';
 import { toolResult, toolError, imageResult } from '../_result.js';
+import { tenantFields } from './_tenant.js';
 import { resolveImageConfig, tierFor, renderImage } from '../images.js';
-
-const TokenField = z.string().optional().describe(
-  'Memory token — the same opaque string your campaign memory uses; it namespaces the image budget too. Omit for the shared local namespace.'
-);
 
 const CampaignField = z.string().describe(
   'Campaign name, e.g. "curse-of-the-fen" — the same one you pass to memory_record. The image budget is per campaign.'
@@ -96,9 +93,7 @@ const REASON_HINTS = Object.freeze({
  */
 export function imageTools(store, pinnedToken, deps = {}) {
   const { env = process.env, now = () => Date.now(), render = renderImage } = deps;
-  const pinned = typeof pinnedToken === 'string' && pinnedToken !== '';
-  const tokenField = pinned ? {} : { token: TokenField };
-  const tokenOf = pinned ? () => pinnedToken : (args) => args.token;
+  const { tokenField, tokenOf } = tenantFields(pinnedToken);
 
   const config = resolveImageConfig(env);
   const renderer = config ? 'server' : 'host';
@@ -159,7 +154,7 @@ export function imageTools(store, pinnedToken, deps = {}) {
         scene: z.string().min(8).describe('What is in front of the players, present tense, 1-3 sentences. Concrete and visible: light, weather, architecture, who is standing where. No secrets the party has not seen.'),
         subject: z.string().optional().describe('Optional focus when the scene is broad, e.g. "the drowned bell tower" or "Maela\'s face as she lies".'),
         tone: z.string().optional().describe('Campaign mood, e.g. "grim", "wondrous", "folkloric" — usually the world\'s tone from world_overview.'),
-        style: z.string().optional().describe('Override the house art style (digital painting) — e.g. "ink and wash", "woodcut", "storybook watercolour". Only when the player asks for a look.')
+        style: z.string().optional().describe('Override the house art style — e.g. "ink and wash", "woodcut", "storybook watercolour". Omit for the client library\'s default look. Only when the player asks for a look.')
       },
       handler: async (args) => {
         try {
@@ -179,12 +174,16 @@ export function imageTools(store, pinnedToken, deps = {}) {
 
           // No key here: hand the prompt and the grant to whoever owns the
           // pixels. The budget is still spent — the grant IS the render, and it
-          // expires (see GRANT_TTL_MS) so it cannot be hoarded.
+          // expires (see GRANT_TTL_MS) so it cannot be hoarded. The hint
+          // matters: on a keyless server this is the DEFAULT outcome of
+          // "show me", and a model with no instructions here tends to paste
+          // the grant JSON at the player and move on.
           if (!config) {
             return toolResult({
               granted: true,
               grant: spend.grant,
               prompt,
+              hint: 'This server has no image model, so no picture was rendered here. Do not show the grant object to the player. Describe the scene vividly in prose, and mention that an art prompt is ready — a player using an app with its own image key can redeem it, or they can paste the prompt into any image tool they like.',
               ...statusPayload(spend.gate, at, renderer, model),
             });
           }

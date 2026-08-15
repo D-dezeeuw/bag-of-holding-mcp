@@ -15,9 +15,13 @@
 // `openssl rand -base64 32` is all a token needs to be.
 //
 // Writes are synchronous on purpose: MCP tool calls arrive one at a
-// time at human cadence, files are small, and sync appends keep the
-// store trivially correct across concurrent server processes
-// sharing a data dir (single-line appends, no read-modify-write).
+// time at human cadence and files are small. Honest limit: this does
+// NOT make the store safe across concurrent server processes sharing
+// a data dir — memory-record ids are minted from ops.length, a
+// read-modify-write, so two processes appending to the same campaign
+// can mint colliding ids. One serving process per data dir (what the
+// docker deployment does) is the supported shape; cross-process
+// id minting is a compaction-era fix.
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -183,6 +187,32 @@ export function createMemoryStore(opts = {}) {
   const stateDir = (ns, campaign) => path.join(campaignDir(ns, campaign), 'state');
   // Outside `state/` on purpose — see `imageGateLoad` below.
   const imageGateFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'image-gate.json');
+  // The world playthrough trio, also outside `state/` (see the world methods).
+  const worldPinFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world.json');
+  const worldLedgerFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world-ledger.jsonl');
+  const worldObservedFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world-observed.json');
+
+  // Closure readers (not methods) so the public methods never rely on `this`
+  // — a destructured store method must keep working.
+  function readWorldPin(ns, campaign) {
+    const file = worldPinFile(ns, campaign);
+    if (!fs.existsSync(file)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return null; // a corrupt pin reads as unbound — worldBind refuses to
+                   // overwrite an existing FILE, so nothing is lost silently
+    }
+  }
+  function readWorldObserved(ns, campaign) {
+    const file = worldObservedFile(ns, campaign);
+    if (!fs.existsSync(file)) return {};
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
 
   /**
    * Read a campaign's op log. Corrupt lines (a torn write, a hand
@@ -565,6 +595,144 @@ export function createMemoryStore(opts = {}) {
       fs.mkdirSync(campaignDir(ns, campaign), { recursive: true });
       fs.writeFileSync(imageGateFile(ns, campaign), JSON.stringify(gate, null, 2), 'utf8');
       return gate;
+    },
+
+    // ── World playthrough binding ─────────────────────────────────────────
+    //
+    // A campaign binds to ONE world: the pin (world.json — which cartridge,
+    // frozen at begin), an append-only patch ledger (world-ledger.jsonl),
+    // and an observation set (world-observed.json — which entities the table
+    // has actually seen, the input to the future revision publish gate).
+    //
+    // Same placement reasoning as the image gate: none of these are
+    // state-vault keys, because state_save takes arbitrary JSON and a pin or
+    // a ledger the model can rewrite is neither a pin nor a ledger. The
+    // ledger is op-wrapped ({"op":"patch",…} per line) so a compaction op
+    // can join the format later without a migration.
+
+    /** The campaign's world pin, or null when it has never begun a world. */
+    worldPin(token, campaign) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      return readWorldPin(ns, campaign);
+    },
+
+    /**
+     * Bind the campaign to a world. Refuses when a pin file already exists —
+     * a campaign plays one world, and rebinding is an explicit, audited
+     * operation (worldRebind), never an accident of calling begin twice.
+     */
+    worldBind(token, campaign, pin) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      const file = worldPinFile(ns, campaign);
+      if (fs.existsSync(file)) {
+        throw new Error(`Campaign "${campaign}" is already bound to a world. One campaign, one world; start another campaign for another world.`);
+      }
+      fs.mkdirSync(campaignDir(ns, campaign), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(pin, null, 2), 'utf8');
+      return pin;
+    },
+
+    /**
+     * Replace the pin — the upgrade path's writer. `audit` is appended to
+     * the pin's `upgrades` trail so the pin always tells its own history.
+     */
+    worldRebind(token, campaign, pin, audit) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      const file = worldPinFile(ns, campaign);
+      if (!fs.existsSync(file)) {
+        throw new Error(`Campaign "${campaign}" is not bound to a world; call world_begin first.`);
+      }
+      const next = { ...pin, upgrades: [...(pin.upgrades ?? []), ...(audit ? [audit] : [])] };
+      fs.writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
+      return next;
+    },
+
+    /** Append validated patches to the campaign's world ledger. */
+    worldAppend(token, campaign, patches) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      if (!patches.length) return { appended: 0 };
+      fs.mkdirSync(campaignDir(ns, campaign), { recursive: true });
+      const lines = patches.map((p) => `${JSON.stringify({ op: 'patch', ...p })}\n`).join('');
+      fs.appendFileSync(worldLedgerFile(ns, campaign), lines, 'utf8');
+      return { appended: patches.length };
+    },
+
+    /**
+     * Read the campaign's world ledger, oldest first. Corrupt lines (a torn
+     * write) are counted and skipped, same discipline as the memory log —
+     * losing one patch beats refusing to load a campaign. Unknown ops are
+     * ignored so an older server can read a ledger a newer one wrote.
+     */
+    worldLedger(token, campaign) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      const file = worldLedgerFile(ns, campaign);
+      if (!fs.existsSync(file)) return { patches: [], corruptLinesSkipped: 0 };
+      const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
+      const patches = [];
+      let corrupt = 0;
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.op === 'patch') {
+            const { op, ...patch } = entry;
+            patches.push(patch);
+          }
+        } catch {
+          corrupt += 1;
+        }
+      }
+      return { patches, corruptLinesSkipped: corrupt };
+    },
+
+    /** The campaign's observation set: { [entityId]: { paths: string[]|'*', turn } }. */
+    worldObserved(token, campaign) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      return readWorldObserved(ns, campaign);
+    },
+
+    /**
+     * Record observations: entries of { id, path?, turn? }. A path of '*'
+     * (or an entry with no path) marks the whole entity observed — "the
+     * party walked into it" — and is never narrowed again; path lists only
+     * ever grow. Small last-write-wins map by design: the future publish
+     * gate reads one tiny file per campaign, not a ledger parse.
+     */
+    worldObserve(token, campaign, entries) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      if (!entries.length) return {};
+      const observed = readWorldObserved(ns, campaign);
+      for (const { id, path: p = '*', turn = 0 } of entries) {
+        if (typeof id !== 'string' || id === '') continue;
+        const prev = observed[id];
+        if (prev?.paths === '*') continue;                      // already whole
+        if (p === '*') observed[id] = { paths: '*', turn: prev?.turn ?? turn };
+        else {
+          const paths = new Set(prev?.paths ?? []);
+          paths.add(p);
+          observed[id] = { paths: [...paths].sort(), turn: prev?.turn ?? turn };
+        }
+      }
+      fs.mkdirSync(campaignDir(ns, campaign), { recursive: true });
+      fs.writeFileSync(worldObservedFile(ns, campaign), JSON.stringify(observed, null, 2), 'utf8');
+      return observed;
+    },
+
+    /** Every campaign in the namespace with a world pin — the upgrade/publish scan's read. */
+    worldBindings(token) {
+      const ns = namespaceFor(token);
+      const root = path.join(dataDir, ns);
+      if (!fs.existsSync(root)) return [];
+      return fs.readdirSync(root, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => ({ campaign: d.name, pin: readWorldPin(ns, d.name) }))
+        .filter((b) => b.pin !== null);
     }
   };
 }

@@ -21,6 +21,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createSessions } from './sessions.js';
 import { createMemoryStore } from './memory/store.js';
+import { createPlaythroughs } from './playthroughs.js';
 import { registerGuides } from './skills/guides.js';
 import { createWorlds } from './worlds.js';
 import { worldsTools } from './tools/worlds.js';
@@ -43,15 +44,16 @@ import { guideTools } from './tools/guides.js';
 import { imageTools } from './tools/images.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.4.0';
+const SERVER_VERSION = '0.5.0';
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.
  *
- * Returns `{ server, sessions, memory, tools }`. The sessions
- * registry and memory store are exposed so a programmatic embedder
- * can mint sessions, read rollLogs, or touch campaign memory
- * without going through MCP tool dispatch. Tests use this too.
+ * Returns `{ server, sessions, memory, worlds, playthroughs,
+ * tools }`. The registries are exposed so a programmatic embedder
+ * can mint sessions, read rollLogs, touch campaign memory, or bind
+ * a campaign to a world without going through MCP tool dispatch.
+ * Tests use this too.
  *
  * @param {{
  *   sessions?: ReturnType<typeof createSessions>,
@@ -85,10 +87,13 @@ export function createServer(opts = {}) {
   const sessions = opts.sessions ?? createSessions();
   const memory = opts.memoryStore ?? createMemoryStore(opts.memory ?? {});
   const worlds = opts.worlds ?? createWorlds({ dir: opts.worldsDir ?? process.env.BOH_WORLDS_DIR ?? null });
+  // Playthroughs bind campaigns to worlds THROUGH the memory store, so they
+  // are as persistent and as tenant-scoped as the memory log itself.
+  const playthroughs = createPlaythroughs(worlds, memory);
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
   const allTools = [
-    ...worldsTools(worlds),
+    ...worldsTools(worlds, playthroughs, opts.memoryToken),
     ...engineTools(sessions),
     ...diceTools(sessions),
     ...checksTools(sessions),
@@ -137,5 +142,5 @@ export function createServer(opts = {}) {
       return json(uri, { lineage: out });
     });
 
-  return { server, sessions, memory, worlds, tools: allTools };
+  return { server, sessions, memory, worlds, playthroughs, tools: allTools };
 }

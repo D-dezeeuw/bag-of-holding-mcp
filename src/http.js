@@ -30,6 +30,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createServer } from './server.js';
 import { createSessions } from './sessions.js';
 import { createMemoryStore } from './memory/store.js';
+import { createWorlds } from './worlds.js';
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
@@ -50,6 +51,14 @@ function send(res, status, payload) {
  */
 export function createHttpHandler(opts = {}) {
   const store = opts.memoryStore ?? createMemoryStore(opts.memory ?? {});
+  // ONE worlds registry for the process, like the store. Without this,
+  // the per-request createServer below fell back to a fresh createWorlds()
+  // every call — re-reading and re-mounting every cartridge from disk per
+  // request, and (before playthroughs were persisted) losing every world
+  // session the moment the response closed. The registry is read-only and
+  // cartridge files are immutable, so sharing it across tenants leaks
+  // nothing: tenancy lives in the store, not the shelf.
+  const worlds = opts.worlds ?? createWorlds({ dir: opts.worldsDir ?? process.env.BOH_WORLDS_DIR ?? null });
 
   // Engine sessions (seeded RNG + rollLog) are keyed by a host-chosen
   // id like "curse-of-the-fen", so a single shared registry would let
@@ -102,7 +111,8 @@ export function createHttpHandler(opts = {}) {
     const { server } = createServer({
       sessions: sessionsFor(token),
       memoryStore: store,
-      memoryToken: token
+      memoryToken: token,
+      worlds
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     // Tie both to the response: stateless means this pair exists

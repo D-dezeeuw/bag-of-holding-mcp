@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpHandler, listen, main } from '../src/http.js';
 import { createMemoryStore } from '../src/memory/store.js';
+import { bakeCartridge } from '@zeeuw/bag-of-holding-client';
 
 // The deployed surface, exercised the way the internet will: a real socket,
 // real HTTP, and the real MCP client speaking streamable-HTTP. Anything that
@@ -24,8 +25,11 @@ let dataDir;
 
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-http-'));
+  const worldsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-http-worlds-'));
+  fs.writeFileSync(path.join(worldsDir, 'world-1234.json'), JSON.stringify(await bakeCartridge(1234)));
   const { handler } = createHttpHandler({
-    memory: { dataDir, tokenHashes: [sha256(TOKEN_A), sha256(TOKEN_B)] }
+    memory: { dataDir, tokenHashes: [sha256(TOKEN_A), sha256(TOKEN_B)] },
+    worldsDir
   });
   server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -84,18 +88,19 @@ test('the full tool surface is served over HTTP', async () => {
   } finally { await client.close(); }
 });
 
-test('the token is absent from every tenant-scoped schema — the model cannot see or leak it', async () => {
+test('the token is absent from EVERY schema over HTTP — the model cannot see or leak it', async () => {
   const client = await connect(TOKEN_A);
   try {
     const { tools } = await client.listTools();
-    // Memory, the state vault and the image budget are all per tenant, so all
-    // three take the token from the URL rather than from the model.
-    const scoped = tools.filter((t) => /^(memory_|state_|image_)/.test(t.name));
-    assert.equal(scoped.length, 15);
-    for (const tool of scoped) {
+    // Not just the known families: any tool that grows a `token` parameter in
+    // pinned mode is a leak, whoever adds it. Memory, state, images and the
+    // world playthrough tools are all tenant-scoped today.
+    for (const tool of tools) {
       const props = Object.keys(tool.inputSchema.properties ?? {});
       assert.ok(!props.includes('token'), `${tool.name} still exposes a token parameter`);
     }
+    const scoped = tools.filter((t) => /^(memory_|state_|image_|world_begin|world_node|world_commit|world_replay)/.test(t.name));
+    assert.equal(scoped.length, 19, 'the tenant-scoped families are all present');
   } finally { await client.close(); }
 });
 
@@ -347,4 +352,40 @@ test('with no options at all, the handler configures itself from the environment
     }
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a playthrough spans SEPARATE HTTP connections — begin, then commit, then replay', async () => {
+  // The old in-process world sessions could not do this at all: stateless
+  // mode builds a fresh McpServer per request, so a `ws-N` id minted by one
+  // call was garbage by the next. The playthrough persists in the tenant
+  // namespace, so three independent connections are three visits to the
+  // same campaign.
+  const c1 = await connect(TOKEN_A);
+  try {
+    const begun = await c1.callTool({ name: 'world_begin', arguments: { campaign: 'fen', world: 'world-1234' } });
+    assert.equal(begun.structuredContent.campaign, 'fen');
+  } finally { await c1.close(); }
+
+  const c2 = await connect(TOKEN_A);
+  try {
+    const committed = await c2.callTool({ name: 'world_commit', arguments: {
+      campaign: 'fen',
+      patches: [{ turn: 1, target: 'npc.vera', path: 'mood', to: 'wary' }],
+    } });
+    assert.equal(committed.structuredContent.appended, 1);
+  } finally { await c2.close(); }
+
+  const c3 = await connect(TOKEN_A);
+  try {
+    const replay = await c3.callTool({ name: 'world_replay', arguments: { campaign: 'fen' } });
+    assert.equal(replay.structuredContent.applied, 1);
+    assert.equal(replay.structuredContent.state['npc.vera'].mood, 'wary');
+  } finally { await c3.close(); }
+
+  // And tenant B cannot see tenant A's campaign at all.
+  const cb = await connect(TOKEN_B);
+  try {
+    const other = await cb.callTool({ name: 'world_replay', arguments: { campaign: 'fen' } });
+    assert.equal(other.isError, true, "another tenant's campaign name is a different campaign");
+  } finally { await cb.close(); }
 });
