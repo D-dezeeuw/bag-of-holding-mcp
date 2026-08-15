@@ -17,6 +17,7 @@ import { bakeCartridge, makeRevision, makePatch, resolvedDigest, applyRevision }
 import { createWorlds } from '../src/worlds.js';
 import { createMemoryStore } from '../src/memory/store.js';
 import { createPlaythroughs } from '../src/playthroughs.js';
+import { publishRevision } from '../scripts/publish-revision.js';
 
 const tmp = [];
 const tmpdir = (label) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), label)); tmp.push(d); return d; };
@@ -130,6 +131,121 @@ test('replay says so when the pinned revision can no longer be resolved', () => 
   const w2 = createWorlds({ dir });
   const pt2 = createPlaythroughs(w2, createMemoryStore({ dataDir, tokenHashes: [] }));
   assert.throws(() => pt2.replay(undefined, 'doomed'), /revision 1, which this shelf can no longer resolve/);
+});
+
+test('world_upgrade: forward-only, observed content blocks, clean content moves the pin', () => {
+  clearShelf();
+  const w = shelf({ 'world-1234.r1.json': r1, 'world-1234.r2.json': r2 });
+  const dataDir = tmpdir('boh-upgrade-');
+  const store = createMemoryStore({ dataDir, tokenHashes: [] });
+  const pt = createPlaythroughs(w, store);
+  const p0 = cart.data.provinces[0];
+
+  // A campaign pinned at 0 that has WALKED the renamed province: r1's edit
+  // to that node is observed content — the upgrade refuses, whole.
+  pt.begin(undefined, 'walked', 'world-1234', { revision: 0 });
+  pt.observeRead(undefined, 'walked', p0);
+  const refused = pt.upgrade(undefined, 'walked', 2, { dryRun: false });
+  assert.equal(refused.ok, false);
+  assert.ok(refused.conflicts.some(c => c.target === p0 && c.revision === 1), 'the conflict names its revision');
+  assert.match(refused.advice, /additive half/);
+  assert.equal(pt.pin(undefined, 'walked').revision, 0, 'a refused upgrade changes NOTHING');
+
+  // A campaign that never went there upgrades clean — dryRun first.
+  pt.begin(undefined, 'stayed-home', 'world-1234', { revision: 0 });
+  const dry = pt.upgrade(undefined, 'stayed-home', 2, { dryRun: true });
+  assert.equal(dry.ok, true);
+  assert.equal(pt.pin(undefined, 'stayed-home').revision, 0, 'dryRun moves nothing');
+  const done = pt.upgrade(undefined, 'stayed-home', 2);
+  assert.equal(done.ok, true);
+  const pin = pt.pin(undefined, 'stayed-home');
+  assert.equal(pin.revision, 2);
+  assert.equal(pin.digest, w.resolve('world-1234', 2).digest);
+  assert.deepEqual(pin.upgrades.map(u => [u.from, u.to]), [[0, 2]], 'the pin tells its own history');
+  assert.equal(pt.replay(undefined, 'stayed-home').state[p0]?.node?.name ?? null, null,
+    'no play patches yet — but the fold base is now r2');
+
+  // Forward-only, and honest errors at the rails.
+  assert.throws(() => pt.upgrade(undefined, 'stayed-home', 1), /forward-only/);
+  assert.throws(() => pt.upgrade(undefined, 'stayed-home', 9), /no servable revision 9/);
+  assert.throws(() => pt.upgrade(undefined, 'never-begun', 2), /has no world/);
+});
+
+test('world_upgrade tripwires: shelf drift and vanished revisions refuse honestly', async () => {
+  clearShelf();
+  const w = shelf({ 'world-1234.r1.json': r1 });
+  const dataDir = tmpdir('boh-tripwire-');
+  const store = createMemoryStore({ dataDir, tokenHashes: [] });
+  const pt = createPlaythroughs(w, store);
+  pt.begin(undefined, 'drifted', 'world-1234', { revision: 0 });
+
+  // The pin's recorded digest stops matching what the shelf resolves — a
+  // hand-edited worlds dir. Refuse to build an upgrade on shifting ground.
+  const pin = pt.pin(undefined, 'drifted');
+  store.worldRebind(undefined, 'drifted', { ...pin, digest: 'feedface' }, null);
+  assert.throws(() => pt.upgrade(undefined, 'drifted', 1), /changed under a pinned campaign/);
+
+  // A campaign pinned at r1 whose revision file vanished: upgrade refuses at
+  // the same honest rail replay uses.
+  pt.begin(undefined, 'stranded', 'world-1234');   // pinned at r1
+  clearShelf();
+  const w2 = createWorlds({ dir });
+  const pt2 = createPlaythroughs(w2, createMemoryStore({ dataDir, tokenHashes: [] }));
+  assert.throws(() => pt2.upgrade(undefined, 'stranded', 2), /can no longer resolve/);
+
+  // And the tool wrapper carries the layer's answers through.
+  const { worldsTools } = await import('../src/tools/worlds.js');
+  const byName = new Map(worldsTools(w2, pt2).map(t => [t.name, t]));
+  const refused = await byName.get('world_upgrade').handler({ campaign: 'stranded', toRevision: 2 });
+  assert.equal(refused.isError, true);
+  const ladder = await byName.get('world_revisions').handler({ world: 'world-1234' });
+  assert.deepEqual(ladder.structuredContent.revisions, [0]);
+});
+
+test('publish-revision.js: validates the rung, scans tenants, never overwrites', async () => {
+  clearShelf();
+  createWorlds({ dir });   // ensure revisions/ exists from earlier mkdirs
+  const dataDir = tmpdir('boh-publish-');
+  const store = createMemoryStore({ dataDir, tokenHashes: [] });
+  const pt = createPlaythroughs(createWorlds({ dir }), store);
+  const p0 = cart.data.provinces[0];
+  pt.begin(undefined, 'fen', 'world-1234');       // pinned at r0 (bare shelf)
+  pt.observeRead(undefined, 'fen', p0);           // and the table has seen p0
+
+  const stage = tmpdir('boh-stage-');
+  const r1File = path.join(stage, 'r1.json');
+  fs.writeFileSync(r1File, JSON.stringify(r1));
+
+  // The scan warns (r1 edits the observed province) and refuses without --force.
+  const logs = [];
+  assert.throws(() => publishRevision({ worlds: dir, file: r1File, dataDir, log: (m) => logs.push(m) }),
+    /1 campaign\(s\) have observed/);
+  assert.ok(logs.some(l => /WARN .*\/fen: edit to/.test(l)));
+  assert.ok(!fs.existsSync(path.join(dir, 'revisions', 'world-1234.r1.json')), 'refused = not written');
+
+  // --force publishes; pins stay authoritative.
+  const out = publishRevision({ worlds: dir, file: r1File, dataDir, force: true, log: () => {} });
+  assert.equal(out.revision, 1);
+  assert.ok(fs.existsSync(out.dest));
+
+  // Immutability: the same rung can never be published twice, --force or not.
+  assert.throws(() => publishRevision({ worlds: dir, file: r1File, force: true, log: () => {} }),
+    /published revisions are immutable/);
+
+  // The next rung must be authored against what the shelf NOW resolves.
+  const r2File = path.join(stage, 'r2.json');
+  fs.writeFileSync(r2File, JSON.stringify(r2));
+  const ok2 = publishRevision({ worlds: dir, file: r2File, log: () => {} });
+  assert.equal(ok2.revision, 2);
+
+  // Wrong rung number and wrong base digest both refuse with the reason.
+  const r4 = makeRevision({
+    worldId: 'world-1234', revision: 4, base: { revision: 3, digest: 'feed' },
+    ledger: [patch('world', 'settingId', null)],
+  });
+  const r4File = path.join(stage, 'r4.json');
+  fs.writeFileSync(r4File, JSON.stringify(r4));
+  assert.throws(() => publishRevision({ worlds: dir, file: r4File, log: () => {} }), /next rung .* is r3/);
 });
 
 test('pinning: a running campaign stays at its revision while a new one takes latest', () => {

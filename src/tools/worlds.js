@@ -57,6 +57,22 @@ export function worldsTools(worlds, playthroughs, pinnedToken) {
       }
     },
     {
+      name: 'world_upgrade',
+      description: 'Move this campaign\'s pin up the revision ladder — the ONLY way a running game ever changes revision. Explicit, audited (the pin records every upgrade), forward-only, and ALL-OR-NOTHING: every intervening revision is classified against this campaign\'s own pinned content, every edit is checked against what the table has actually observed, and one conflict refuses the whole upgrade with the full list — nothing half-applies. Declining is a no-op forever; a pin is a fine place to stay. The play ledger is never touched. Pass dryRun to see the verdict without moving the pin. Ask the table before upgrading — this changes their world\'s canon, even when it changes nothing they have seen.',
+      input: {
+        ...tokenField,
+        campaign: CampaignField,
+        toRevision: z.number().int().min(1).describe('The revision to move to. world_revisions shows the ladder.'),
+        dryRun: z.boolean().optional().describe('Check and report without moving the pin.'),
+      },
+      handler: async (args) => {
+        try {
+          return toolResult(playthroughs.upgrade(tokenOf(args), args.campaign, args.toRevision,
+            { dryRun: args.dryRun ?? false }));
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
       name: 'world_revisions',
       description: 'The revision ladder for one world: which revisions this shelf can serve ([0] for a base with no revisions), and which is latest. A revision is a published delta over the base cartridge — running campaigns stay pinned to the revision they began on; new campaigns default to latest. A ladder shorter than the files on disk means a gap or a base-digest mismatch truncated it — the registry errors say which.',
       input: { world: WorldField },
