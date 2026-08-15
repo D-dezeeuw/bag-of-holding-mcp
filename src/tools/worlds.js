@@ -53,8 +53,19 @@ export function worldsTools(worlds, playthroughs, pinnedToken) {
       }
     },
     {
+      name: 'world_powers',
+      description: 'The world\'s power layer in one read: every faction (territory, allies, enemies), the war state (who fights whom, how hot, over what, and the front provinces — null means honest peace), and the world npcs — the faces of the powers, each linked by id to the crown it holds (`seatOf`) and the faction it leads (`leads`). Read this once at session start to know whose war the party is walking into; the ids are the same ones beats cast and payoffs bind to.',
+      input: { world: WorldField },
+      handler: async ({ world }) => {
+        try {
+          const out = worlds.powers(world);
+          return out ? toolResult(out) : toolError(new Error(`unknown world '${world}'`));
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
       name: 'world_node',
-      description: 'Everything the cartridge knows about one node: the tree record (name, kind, detail, climate…), its baked outline if the bake hydrated one, its blueprint slice, its crown, and every legend bound at or above it. Detail 0/1 content only — full hydration happens at the table with the host\'s own model. Pass `campaign` when the party is actually THERE: the node is then recorded as observed, which is what protects it from being rewritten under the table by a future world revision.',
+      description: 'Everything the cartridge knows about one node: the tree record (name, kind, detail, climate…), its baked outline if the bake hydrated one, its blueprint slice, its crown and the face seated on it (the world npc whose seatOf names this crown), the factions whose territory covers it, the wars whose front runs through it, and every legend bound at or above it. Detail 0/1 content only — full hydration happens at the table with the host\'s own model. Pass `campaign` when the party is actually THERE: the node is then recorded as observed, which is what protects it from being rewritten under the table by a future world revision.',
       input: { ...tokenField, world: WorldField, node: NodeField, campaign: CampaignField.optional() },
       handler: async (args) => {
         try {

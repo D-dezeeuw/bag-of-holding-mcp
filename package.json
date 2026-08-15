@@ -1,6 +1,6 @@
 {
   "name": "@zeeuw/bag-of-holding-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Model Context Protocol server for @zeeuw/bag-of-holding. Exposes the SRD 5.2 rules kernel — dice, checks, combat, conditions, XP, beats, movesets, SRD lookups — as MCP tools, plus long-campaign persistence (namespaced memory log with hybrid semantic search + state vault), generated world cartridges, a hand-authored starter world pack, a budgeted scene-image gate, and how-to-play guides. Runs over stdio locally or as a multi-tenant HTTP service, so any MCP-aware AI host can run rules-correct, replay-deterministic D&D campaigns without trusting the model to do the math.",
   "type": "module",
   "main": "index.js",
@@ -60,7 +60,7 @@
   },
   "peerDependencies": {
     "@zeeuw/bag-of-holding": "^2.5.0",
-    "@zeeuw/bag-of-holding-client": "^0.18.0"
+    "@zeeuw/bag-of-holding-client": "^0.22.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
