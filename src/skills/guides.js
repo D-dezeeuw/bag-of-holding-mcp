@@ -44,7 +44,10 @@ player's call alone — offer \`memory_export\` as a backup first, and
    \`{ seed, world, started }\`.
 4. Pick a world: \`world_list\`, then \`world_overview\`. Read the
    openers. Skim \`world_secrets\` ONCE as the DM, then reveal them
-   only through play.
+   only through play. For a GENERATED world instead: \`world_catalog\`
+   → \`world_begin\`, then \`world_powers\` — the factions, the wars
+   and the faces whose ids the story binds to. Know whose war the
+   party is walking into before they take a single step.
 5. Run session zero (see the session-zero guide): build the party
    with \`character_derive_sheet\`, save records with
    \`state_save({ key: "party" })\`.

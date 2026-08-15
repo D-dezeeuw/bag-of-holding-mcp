@@ -68,6 +68,43 @@ test('world_node serves the tree record, slice, crown, and bound legends', async
   assert.ok(out.legends.length >= 1, 'first port must be legend-bound');
 });
 
+test('world_powers serves the whole power layer: factions, wars, faces', async () => {
+  const w = worlds.get('world-1234');
+  const r = await tool('world_powers')({ world: 'world-1234' });
+  const { factions, warState, npcs } = r.structuredContent;
+  assert.ok(factions.length >= 2, 'a baked world has powers');
+  assert.equal(npcs.length, factions.length, 'every power has a face');
+  for (const n of npcs) {
+    assert.equal(factions.some(f => f.id === n.leads), true, `${n.id} leads a real faction`);
+    if (n.seatOf) assert.ok(w.lore.crowns.some(c => c.id === n.seatOf), `${n.id} sits a real crown`);
+  }
+  // The guaranteed fault line means a war usually exists; whatever the roll,
+  // the answer is structured or an honest null, never undefined.
+  assert.ok(warState === null || warState.wars.length >= 1);
+
+  const bad = await tool('world_powers')({ world: 'world-9' });
+  assert.equal(bad.isError, true);
+});
+
+test('world_node names the powers as felt here: holders, fronts, the seated face', async () => {
+  const w = worlds.get('world-1234');
+  // A province some faction holds — Phase A anchors every faction somewhere.
+  const held = w.factions.find(f => f.territory.length)?.territory[0];
+  assert.ok(held, 'some faction holds land');
+  const r = await tool('world_node')({ world: 'world-1234', node: held });
+  const out = r.structuredContent;
+  assert.ok(out.factions.some(f => f.territory.includes(held)), 'the holder is named');
+  for (const war of out.wars) assert.ok(war.front.includes(held), 'only wars fronted here');
+  // From the npc side: wherever a face IS seated, its throne's province
+  // serves it. (A faction sovereign over two crowns sits only the first,
+  // so the positive case is found via seatOf, not assumed of every crown.)
+  const seated = w.npcs.find(n => n.seatOf);
+  assert.ok(seated, 'some face is seated');
+  const seatNode = seated.seatOf.replace(/\.crown$/, '');
+  const seatR = await tool('world_node')({ world: 'world-1234', node: seatNode });
+  assert.equal(seatR.structuredContent.face.id, seated.id, 'the seated face is served with its throne');
+});
+
 test('world_lineage walks root-down', async () => {
   const w = worlds.get('world-1234');
   const pId = w.provinces[0];

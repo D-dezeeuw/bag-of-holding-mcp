@@ -74,15 +74,44 @@ export function createWorlds({ dir = process.env.BOH_WORLDS_DIR ?? null } = {}) 
       return w ? cellsOf(w.envelope.data, entityId) : null;
     },
 
+    /**
+     * The power layer in one read: who holds what, who fights whom, and the
+     * faces. Everything the depth phases mint at genesis — factions with
+     * territory and relations, the war state (null = honest peace), and the
+     * world npcs whose seatOf/leads ids tie them to crowns and factions.
+     */
+    powers(worldId) {
+      const world = get(worldId);
+      if (!world) return null;
+      return {
+        factions: world.factions ?? [],
+        warState: world.warState ?? null,
+        npcs: world.npcs ?? [],
+      };
+    },
+
     node(worldId, nodeId) {
       const world = get(worldId);
       const node = world?.geo.nodes[nodeId];
       if (!node) return null;
+      // The powers as felt HERE: a faction whose territory covers this node
+      // (or an ancestor), a war whose front runs through it, and — when the
+      // node's crown has a sovereign — the face seated on that throne.
+      const inTerritory = (ids) => (ids ?? []).some(p => nodeId === p || nodeId.startsWith(`${p}.`));
+      const factions = (world.factions ?? []).filter(f => inTerritory(f.territory));
+      const wars = (world.warState?.wars ?? []).filter(w => inTerritory(w.front));
+      const crown = world.lore.crowns.find(c => c.id === `${nodeId}.crown`) ?? null;
+      const face = crown
+        ? (world.npcs ?? []).find(n => n.seatOf === crown.id) ?? null
+        : null;
       return {
         node,
         outline: world.outlines?.[nodeId] ?? null,
         slice: world.slices?.[nodeId] ?? null,
-        crown: world.lore.crowns.find(c => c.id === `${nodeId}.crown`) ?? null,
+        crown,
+        face,
+        factions,
+        wars,
         legends: world.lore.legends.filter(l => (l.sites ?? []).some(s =>
           s === nodeId || nodeId.startsWith(`${s}.`))),
       };

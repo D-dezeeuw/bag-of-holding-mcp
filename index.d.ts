@@ -401,6 +401,11 @@ export interface WorldRegistry {
    * the cartridge has never heard of — which IS its fold base.
    */
   cell(worldId: string, entityId: string): Record<string, unknown> | null;
+  powers(worldId: string): {
+    factions: Array<Record<string, unknown>>;
+    warState: Record<string, unknown> | null;
+    npcs: Array<Record<string, unknown>>;
+  } | null;
   node(worldId: string, nodeId: string): Record<string, unknown> | null;
   lineage(worldId: string, nodeId: string): Array<Record<string, unknown>> | null;
 }
