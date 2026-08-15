@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { toolResult, toolError } from '../_result.js';
 import { tenantFields } from './_tenant.js';
+import { exportWorldEpub } from '../export.js';
 
 const WorldField = z.string().describe('World id from world_catalog, e.g. "world-1234".');
 const NodeField = z.string().describe('Node id inside the world tree, e.g. "continent-0.province-1".');
@@ -105,6 +106,31 @@ export function worldsTools(worlds, playthroughs, pinnedToken) {
           if (!out) return toolError(new Error(`unknown node '${args.node}' in '${args.world}'`));
           if (args.campaign) playthroughs.observeRead(tokenOf(args), args.campaign, args.node);
           return toolResult(out);
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
+      name: 'world_export',
+      description: 'The world book: one cartridge (at a revision) carved into an EPUB and returned base64-encoded. Two cuts: "player" is safe to hand across the table — geography, legends as stories, crowns as public fact, the powers and their wars as tavern talk; "gm" adds the table secrets (a legend\'s kernel of truth and payoff, a crown\'s stance on the threat, an npc\'s wants, each land\'s menace). NEVER share the gm cut with players. The book is coverless (server-side rendering has no canvas), byte-deterministic, and ends in a colophon carrying { worldId, revision, digest } so book and campaign can be proven to agree.',
+      input: {
+        world: WorldField,
+        revision: z.number().int().min(0).optional().describe('Export at this revision. Omit for latest.'),
+        edition: z.enum(['player', 'gm']).default('player').describe('Which cut. "gm" includes table secrets — keep it off the table.'),
+      },
+      handler: async ({ world, revision, edition }) => {
+        try {
+          const at = worlds.resolve(world, revision ?? null);
+          if (!at) return toolError(new Error(`world '${world}' has no servable revision ${revision ?? '(latest)'} — world_revisions shows the ladder`));
+          const book = await exportWorldEpub(world, at, { edition: edition ?? 'player' });
+          return toolResult({
+            filename: book.filename,
+            edition: book.edition,
+            revision: at.revision,
+            digest: at.digest,
+            chapters: book.chapters,
+            bytes: book.bytes.length,
+            epubBase64: Buffer.from(book.bytes).toString('base64'),
+          });
         } catch (err) { return toolError(err); }
       }
     },
