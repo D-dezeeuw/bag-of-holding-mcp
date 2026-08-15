@@ -136,6 +136,22 @@ export function createWorlds({ dir = process.env.BOH_WORLDS_DIR ?? null } = {}) 
     // near-copy, and the two had already drifted apart — the copy had lost
     // `name`). Only `id` is layered on top, because here the id is the
     // filename stem, not the seed.
+    /**
+     * One mounted revision artifact's data (worldId, revision, base, ledger,
+     * notes, publishedAt) — what the upgrade path classifies. Null when the
+     * rung is not on the servable ladder.
+     */
+    revision(worldId, r) {
+      if (!Number.isInteger(r) || r < 1) return null;
+      const f = revisionFiles.get(worldId)?.get(r);
+      if (!f) return null;
+      try {
+        return mountRevision(readFileSync(join(dir, 'revisions', f), 'utf8'), {
+          onError: (code, detail) => errors.push(`revisions/${f}: ${code} ${detail ?? ''}`.trim()),
+        });
+      } catch (err) { errors.push(`revisions/${f}: ${err.message}`); return null; }
+    },
+
     list: () => [...worlds.entries()].map(([id, w]) => {
       const ladder = revisionsOf(id);
       return { ...catalogEntry(w.envelope, { id }), revisions: ladder, latest: ladder.at(-1) };

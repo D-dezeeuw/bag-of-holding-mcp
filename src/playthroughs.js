@@ -18,7 +18,10 @@
 // cartridge's own cells, so a province the players changed replays as that
 // province — name, slice, mood and all — not as patch residue over `{}`.
 
-import { makePatch, appendPatch, fold, isValidId } from '@zeeuw/bag-of-holding-client';
+import {
+  makePatch, appendPatch, fold, isValidId,
+  classifyRevision, revisionConflicts,
+} from '@zeeuw/bag-of-holding-client';
 
 // The engine's ledger id grammar (kind.name segments) is one convention;
 // cartridge geo ids (continent-0.province-1) are another. Both are legal
@@ -161,6 +164,77 @@ export function createPlaythroughs(worlds, store) {
         turns: patches.length ? Math.max(...patches.map(p => p.turn)) : 0,
         applied: patches.length,
         state,
+      };
+    },
+
+    /**
+     * Move a campaign's pin up the revision ladder — the ONLY way a running
+     * game ever changes revision, and it is explicit, audited, and
+     * all-or-nothing. The checks, in order: bound; forward-only; the pinned
+     * resolution still matches the pin (tripwire for a hand-edited shelf);
+     * the target rung resolves (its chain digests already verified by the
+     * registry). Then every intervening revision's ledger is classified
+     * against THIS campaign's pinned content — a node added since the pin is
+     * an add, everything else is an edit — and every edit is checked against
+     * what this campaign has actually observed. One conflict refuses the
+     * whole upgrade with the full list; declining is a no-op forever. The
+     * play ledger is never touched, and the old revision's files stay on the
+     * shelf, so world_replay at the old pin still reproduces the campaign.
+     */
+    upgrade(token, campaign, toRevision, { dryRun = false } = {}) {
+      const pin = store.worldPin(token, campaign);
+      if (!pin) {
+        throw new Error(`campaign "${campaign}" has no world; call world_begin first`);
+      }
+      const from = pin.revision ?? 0;
+      if (!Number.isInteger(toRevision) || toRevision <= from) {
+        throw new Error(`upgrades are forward-only: campaign "${campaign}" is at revision ${from}, cannot move to ${toRevision}`);
+      }
+      const current = worlds.resolve(pin.worldId, from);
+      if (!current) {
+        throw new Error(`campaign "${campaign}" is pinned to '${pin.worldId}' revision ${from}, which this shelf can no longer resolve`);
+      }
+      if (pin.digest && current.digest !== pin.digest) {
+        throw new Error(`the shelf's revision ${from} of '${pin.worldId}' resolves to ${current.digest}, but this campaign pinned ${pin.digest} — the worlds directory changed under a pinned campaign; refusing to upgrade over it`);
+      }
+      const target = worlds.resolve(pin.worldId, toRevision);
+      if (!target) {
+        throw new Error(`world '${pin.worldId}' has no servable revision ${toRevision} — world_revisions shows the ladder`);
+      }
+
+      const adds = [], edits = [];
+      for (let r = from + 1; r <= toRevision; r++) {
+        const rev = worlds.revision(pin.worldId, r);
+        if (!rev) throw new Error(`revision ${r} of '${pin.worldId}' vanished mid-check`);
+        const split = classifyRevision(current.data, rev.ledger);
+        adds.push(...split.adds.map(p => ({ ...p, revision: r })));
+        edits.push(...split.edits.map(p => ({ ...p, revision: r })));
+      }
+      const observedRaw = store.worldObserved(token, campaign);
+      const observations = Object.fromEntries(
+        Object.entries(observedRaw).map(([id, o]) => [id, o.paths]));
+      const conflicts = revisionConflicts(edits, observations).map(c => ({
+        ...c,
+        revision: edits.find(e => e.target === c.target && e.path === c.path)?.revision ?? null,
+        was: 'observed at the table',
+      }));
+
+      if (conflicts.length) {
+        return {
+          ok: false, campaign, from, to: toRevision,
+          adds: adds.length, edits: edits.length, blocked: conflicts.length,
+          conflicts,
+          advice: 'This campaign has seen content the upgrade would rewrite. Publish the revision in two halves — the additive half upgrades cleanly everywhere — or keep this campaign pinned; a pin is a fine place to stay.',
+        };
+      }
+      if (!dryRun) {
+        store.worldRebind(token, campaign,
+          { ...pin, revision: toRevision, digest: target.digest },
+          { from, to: toRevision, at: new Date().toISOString() });
+      }
+      return {
+        ok: true, campaign, from, to: toRevision, digest: target.digest,
+        adds: adds.length, edits: edits.length, dryRun,
       };
     },
 

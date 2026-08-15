@@ -81,7 +81,7 @@ test('the full tool surface is served over HTTP', async () => {
   const client = await connect(TOKEN_A);
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 98);
+    assert.equal(tools.length, 99);
     for (const expected of ['dice_roll', 'memory_record', 'world_overview', 'guide_get', 'state_save']) {
       assert.ok(tools.some((t) => t.name === expected), `missing ${expected}`);
     }

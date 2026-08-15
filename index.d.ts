@@ -475,6 +475,12 @@ export interface Playthroughs {
   };
   /** Fold the campaign's ledger over the pinned cartridge's cells. Null when unbound. */
   replay(token: string | undefined, campaign: string, opts?: { upToTurn?: number | null }): Record<string, unknown> | null;
+  /**
+   * Move the pin up the revision ladder: forward-only, all-or-nothing,
+   * audited on the pin. Conflicts with observed content refuse the whole
+   * upgrade ({ ok: false, conflicts }); dryRun reports without moving.
+   */
+  upgrade(token: string | undefined, campaign: string, toRevision: number, opts?: { dryRun?: boolean }): Record<string, unknown>;
   /** Record that the party has seen a node whole (feeds the future revision publish gate). */
   observeRead(token: string | undefined, campaign: string, nodeId: string): void;
 }
