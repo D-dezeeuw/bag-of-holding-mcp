@@ -128,7 +128,7 @@ test('export → import restores into a fresh campaign with fresh ids and origin
   assert.equal(dump.records.length, 1);
 
   const result = store.importAll(undefined, 'fen-restored', dump.records);
-  assert.deepEqual(result, { imported: 1, campaign: 'fen-restored' });
+  assert.deepEqual(result, { imported: 1, stateKeys: 0, world: false, campaign: 'fen-restored' });
   const restored = store.exportAll(undefined, 'fen-restored').records;
   assert.equal(restored[0].id, 'm-1');
   assert.equal(restored[0].ts, dump.records[0].ts);

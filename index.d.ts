@@ -204,10 +204,13 @@ export interface MemoryStore {
   forget(token: string | undefined, campaign: string, id: string): { forgotten: string };
   exportAll(token: string | undefined, campaign: string): {
     campaign: string; records: MemoryRecord[]; corruptLinesSkipped: number;
+    state: Record<string, unknown>;
+    world: { pin: WorldPin; ledger: Array<Record<string, unknown>>; observed: Record<string, unknown> } | null;
   };
-  importAll(token: string | undefined, campaign: string, records: MemoryRecordInput[]): {
-    imported: number; campaign: string;
-  };
+  importAll(token: string | undefined, campaign: string, records: MemoryRecordInput[], extras?: {
+    state?: Record<string, unknown> | null;
+    world?: { pin: WorldPin; ledger?: Array<Record<string, unknown>>; observed?: Record<string, unknown> } | null;
+  }): { imported: number; stateKeys: number; world: boolean; campaign: string };
   campaigns(token?: string): Array<{ campaign: string; records: number; stateKeys: number }>;
   info(token?: string): {
     namespace: string; dataDir: string; authRequired: boolean;
@@ -237,6 +240,14 @@ export interface MemoryStore {
   worldObserve(token: string | undefined, campaign: string, entries: Array<{ id: string; path?: string; turn?: number }>): Record<string, unknown>;
   /** Every campaign in the namespace with a world pin. */
   worldBindings(token: string | undefined): Array<{ campaign: string; pin: WorldPin }>;
+  /** The session-start surface: one row per campaign, newest activity first. */
+  campaignOverview(token: string | undefined): Array<{
+    campaign: string; records: number; stateKeys: number; ledgerLength: number;
+    lastPlayedAt: number;
+    world: { worldId: string; setting: string | null; digest: string | null; start: string | null } | null;
+  }>;
+  /** Delete a campaign directory whole. Irreversible; throws on unknown. */
+  campaignDelete(token: string | undefined, campaign: string): { deleted: string };
   /**
    * The campaign's scene-image gate (permission + budget), or null when it
    * has never been set or the file is unreadable. Stored beside the state

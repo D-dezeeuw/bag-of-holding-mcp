@@ -62,7 +62,7 @@ test('a full campaign loop through the tools: record, search, recap, correct, ba
   assert.equal(dump.data.records.length, 2);
 
   const imported = await run('memory_import', { campaign: 'fen-copy', records: dump.data.records });
-  assert.deepEqual(imported.data, { imported: 2, campaign: 'fen-copy' });
+  assert.deepEqual(imported.data, { imported: 2, stateKeys: 0, world: false, campaign: 'fen-copy' });
 });
 
 test('state tools checkpoint and reload the numbers', async () => {

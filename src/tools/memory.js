@@ -141,15 +141,22 @@ export function memoryTools(store, pinnedToken) {
     },
     {
       name: 'memory_import',
-      description: 'Re-record an exported dump into a campaign (fresh ids, original timestamps kept). Import into an empty campaign name for a faithful restore; importing into a live campaign appends.',
+      description: 'Re-record an exported dump into a campaign (fresh memory ids, original timestamps kept). Pass `state` and `world` from the same memory_export payload to restore the checkpoints and the world playthrough too. Import into a FRESH campaign name for a faithful restore: memory appends into a live campaign, but a playthrough refuses to overwrite an existing world binding.',
       input: {
         ...tokenField,
         campaign: CampaignField,
-        records: z.array(z.record(z.unknown())).describe('The `records` array from a memory_export payload.')
+        records: z.array(z.record(z.unknown())).describe('The `records` array from a memory_export payload.'),
+        state: z.record(z.unknown()).optional().describe('The `state` object from memory_export — checkpoint key → data.'),
+        world: z.object({
+          pin: z.record(z.unknown()),
+          ledger: z.array(z.record(z.unknown())).optional(),
+          observed: z.record(z.unknown()).optional(),
+        }).nullish().describe('The `world` object from memory_export — the playthrough (pin + ledger + observations).'),
       },
       handler: async (args) => {
         try {
-          return toolResult(store.importAll(tokenOf(args), args.campaign, args.records));
+          return toolResult(store.importAll(tokenOf(args), args.campaign, args.records,
+            { state: args.state ?? null, world: args.world ?? null }));
         } catch (err) { return toolError(err); }
       }
     },

@@ -81,7 +81,7 @@ test('the full tool surface is served over HTTP', async () => {
   const client = await connect(TOKEN_A);
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 94);
+    assert.equal(tools.length, 96);
     for (const expected of ['dice_roll', 'memory_record', 'world_overview', 'guide_get', 'state_save']) {
       assert.ok(tools.some((t) => t.name === expected), `missing ${expected}`);
     }
@@ -99,8 +99,8 @@ test('the token is absent from EVERY schema over HTTP — the model cannot see o
       const props = Object.keys(tool.inputSchema.properties ?? {});
       assert.ok(!props.includes('token'), `${tool.name} still exposes a token parameter`);
     }
-    const scoped = tools.filter((t) => /^(memory_|state_|image_|world_begin|world_node|world_commit|world_replay)/.test(t.name));
-    assert.equal(scoped.length, 19, 'the tenant-scoped families are all present');
+    const scoped = tools.filter((t) => /^(memory_|state_|image_|campaign_|world_begin|world_node|world_commit|world_replay)/.test(t.name));
+    assert.equal(scoped.length, 21, 'the tenant-scoped families are all present');
   } finally { await client.close(); }
 });
 

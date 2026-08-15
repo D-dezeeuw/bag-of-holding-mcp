@@ -39,12 +39,13 @@ import { monsterTools } from './tools/monsters.js';
 import { restTools } from './tools/rest.js';
 import { engineTools } from './tools/engine.js';
 import { memoryTools } from './tools/memory.js';
+import { campaignTools } from './tools/campaigns.js';
 import { worldTools } from './tools/world.js';
 import { guideTools } from './tools/guides.js';
 import { imageTools } from './tools/images.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.5.0';
+const SERVER_VERSION = '0.6.0';
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.
@@ -108,6 +109,7 @@ export function createServer(opts = {}) {
     ...monsterTools(sessions),
     ...restTools(sessions),
     ...memoryTools(memory, opts.memoryToken),
+    ...campaignTools(memory, opts.memoryToken),
     ...imageTools(memory, opts.memoryToken, opts.images ?? {}),
     ...worldTools(),
     ...guideTools()

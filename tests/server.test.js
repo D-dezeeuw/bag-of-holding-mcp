@@ -23,7 +23,7 @@ test('createServer wires every tool module so the AI gets the full surface in on
   assert.ok(sessions);
   assert.ok(memory);
   const names = new Set(tools.map((t) => t.name));
-  assert.equal(names.size, 94, 'tool count is part of the README contract');
+  assert.equal(names.size, 96, 'tool count is part of the README contract');
   assert.equal(names.size, tools.length, 'no two tools may share a name');
   for (const expected of [
     'engine_create_session', 'engine_get_roll_log', 'engine_verify_log',
@@ -46,7 +46,8 @@ test('createServer wires every tool module so the AI gets the full surface in on
     'world_list', 'world_overview', 'world_region', 'world_faction',
     'world_npc', 'world_hooks', 'world_secrets', 'world_search',
     'guide_list', 'guide_get',
-    'image_status', 'image_enable', 'image_disable', 'image_observe'
+    'image_status', 'image_enable', 'image_disable', 'image_observe',
+    'campaign_list', 'campaign_delete'
   ]) {
     assert.ok(names.has(expected), `missing tool: ${expected}`);
   }
@@ -56,7 +57,7 @@ test('createServer() with no options stands up on environment defaults without t
   const { server, sessions, memory, tools } = createServer();
   assert.ok(server);
   assert.ok(sessions.get());
-  assert.equal(tools.length, 94);
+  assert.equal(tools.length, 96);
   assert.equal(typeof memory.dataDir, 'string');
 });
 
