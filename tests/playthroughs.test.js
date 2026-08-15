@@ -157,10 +157,10 @@ test('a world with no port still lands somewhere deterministic', () => {
   // The skeleton always mints the first province as a port, so this needs a
   // stub registry: the fallback is first-province, then null — never a throw.
   const store = freshStore();
+  const flat = { provinces: ['p-0', 'p-1'], geo: { nodes: { 'p-0': {}, 'p-1': {} } }, digest: 'd', settingId: null };
   const stub = {
-    get: (id) => (id === 'world-flat'
-      ? { provinces: ['p-0', 'p-1'], geo: { nodes: { 'p-0': {}, 'p-1': {} } }, digest: 'd', settingId: null }
-      : null),
+    get: (id) => (id === 'world-flat' ? flat : null),
+    resolve: (id, revision = null) => (id === 'world-flat' ? { revision: revision ?? 0, data: flat, digest: 'd' } : null),
     cell: () => ({}),
   };
   const pt = createPlaythroughs(stub, store);

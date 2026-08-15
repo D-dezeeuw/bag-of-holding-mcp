@@ -68,6 +68,13 @@ test('world_node serves the tree record, slice, crown, and bound legends', async
   assert.ok(out.legends.length >= 1, 'first port must be legend-bound');
 });
 
+test('world_revisions shows the ladder — [0] on a shelf with no revisions', async () => {
+  const r = await tool('world_revisions')({ world: 'world-1234' });
+  assert.deepEqual(r.structuredContent, { world: 'world-1234', revisions: [0], latest: 0 });
+  const bad = await tool('world_revisions')({ world: 'world-9' });
+  assert.equal(bad.isError, true);
+});
+
 test('world_powers serves the whole power layer: factions, wars, faces', async () => {
   const w = worlds.get('world-1234');
   const r = await tool('world_powers')({ world: 'world-1234' });
