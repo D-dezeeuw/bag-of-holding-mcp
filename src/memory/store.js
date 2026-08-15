@@ -473,7 +473,35 @@ export function createMemoryStore(opts = {}) {
       const ns = namespaceFor(token);
       assertName('campaign', campaign);
       const { ops, corrupt } = loadOps(ns, campaign);
-      return { campaign, records: liveRecords(ops), corruptLinesSkipped: corrupt };
+      // The whole campaign travels: narrative log, mechanical checkpoints,
+      // and the world playthrough (pin + ledger + observed) — that trio is
+      // what lets a campaign started over MCP continue in a browser host
+      // folding the same ledger over the same cartridge. The image gate is
+      // deliberately NOT exported: a render budget is deployment policy,
+      // not campaign story, and importing one would smuggle spend state.
+      const state = {};
+      const sd = stateDir(ns, campaign);
+      if (fs.existsSync(sd)) {
+        for (const f of fs.readdirSync(sd).filter((x) => x.endsWith('.json'))) {
+          try { state[f.slice(0, -5)] = JSON.parse(fs.readFileSync(path.join(sd, f), 'utf8')); }
+          catch { /* a torn checkpoint is skipped, same as a torn memory line */ }
+        }
+      }
+      const pin = readWorldPin(ns, campaign);
+      const world = pin === null ? null : {
+        pin,
+        ledger: (() => { const file = worldLedgerFile(ns, campaign);
+          if (!fs.existsSync(file)) return [];
+          const out = [];
+          for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+            if (line.trim() === '') continue;
+            try { const e = JSON.parse(line); if (e.op === 'patch') { const { op, ...patch } = e; out.push(patch); } }
+            catch { /* torn line */ }
+          }
+          return out; })(),
+        observed: readWorldObserved(ns, campaign),
+      };
+      return { campaign, records: liveRecords(ops), corruptLinesSkipped: corrupt, state, world };
     },
 
     /**
@@ -481,7 +509,7 @@ export function createMemoryStore(opts = {}) {
      * kept). Import into an *empty* campaign to get a faithful
      * restore; importing into a live one appends.
      */
-    importAll(token, campaign, records) {
+    importAll(token, campaign, records, { state = null, world = null } = {}) {
       const ns = namespaceFor(token);
       assertName('campaign', campaign);
       if (!Array.isArray(records)) {
@@ -493,10 +521,89 @@ export function createMemoryStore(opts = {}) {
         writeRecord(ns, campaign, rec, ops);
         ops = [...ops, rec];
       }
-      return { imported: records.length, campaign };
+      let stateKeys = 0;
+      for (const [key, data] of Object.entries(state ?? {})) {
+        assertName('state key', key);
+        fs.mkdirSync(stateDir(ns, campaign), { recursive: true });
+        fs.writeFileSync(path.join(stateDir(ns, campaign), `${key}.json`), JSON.stringify(data, null, 2), 'utf8');
+        stateKeys += 1;
+      }
+      let worldImported = false;
+      if (world?.pin) {
+        // Through worldBind, so a bound campaign refuses rather than being
+        // silently paved over — import a playthrough into a FRESH campaign.
+        fs.mkdirSync(campaignDir(ns, campaign), { recursive: true });
+        const file = worldPinFile(ns, campaign);
+        if (fs.existsSync(file)) {
+          throw new Error(`Campaign "${campaign}" already has a world; import a playthrough into a fresh campaign.`);
+        }
+        fs.writeFileSync(file, JSON.stringify(world.pin, null, 2), 'utf8');
+        if (world.ledger?.length) {
+          const lines = world.ledger.map((p) => `${JSON.stringify({ op: 'patch', ...p })}\n`).join('');
+          fs.appendFileSync(worldLedgerFile(ns, campaign), lines, 'utf8');
+        }
+        if (world.observed && Object.keys(world.observed).length) {
+          fs.writeFileSync(worldObservedFile(ns, campaign), JSON.stringify(world.observed, null, 2), 'utf8');
+        }
+        worldImported = true;
+      }
+      return { imported: records.length, stateKeys, world: worldImported, campaign };
     },
 
     campaigns: listCampaigns,
+
+    /**
+     * The session-start surface: one row per campaign, newest activity
+     * first — enough for a host to render "resume, start new, or delete"
+     * without touching any other tool.
+     */
+    campaignOverview(token) {
+      const ns = namespaceFor(token);
+      const root = path.join(dataDir, ns);
+      if (!fs.existsSync(root)) return [];
+      const mtimeOf = (p) => { try { return fs.statSync(p).mtimeMs; } catch { return 0; } };
+      return fs.readdirSync(root, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => {
+          const campaign = d.name;
+          const live = liveRecords(loadOps(ns, campaign).ops);
+          const sd = stateDir(ns, campaign);
+          const stateKeys = fs.existsSync(sd) ? fs.readdirSync(sd).filter((f) => f.endsWith('.json')).length : 0;
+          const pin = readWorldPin(ns, campaign);
+          const ledgerFile = worldLedgerFile(ns, campaign);
+          let ledgerLength = 0;
+          if (fs.existsSync(ledgerFile)) {
+            ledgerLength = fs.readFileSync(ledgerFile, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '').length;
+          }
+          const lastPlayedAt = Math.round(Math.max(
+            mtimeOf(memoryFile(ns, campaign)), mtimeOf(ledgerFile),
+            mtimeOf(worldPinFile(ns, campaign)), mtimeOf(sd), 0));
+          return {
+            campaign, records: live.length, stateKeys, ledgerLength, lastPlayedAt,
+            world: pin === null ? null : {
+              worldId: pin.worldId, setting: pin.setting ?? null,
+              digest: pin.digest ?? null, start: pin.start ?? null,
+            },
+          };
+        })
+        .sort((a, b) => b.lastPlayedAt - a.lastPlayedAt);
+    },
+
+    /**
+     * Delete a campaign — memory log, state vault, image gate, playthrough,
+     * everything. Irreversible by design; the tool layer demands the player
+     * type the name back, and offers memory_export first.
+     */
+    campaignDelete(token, campaign) {
+      const ns = namespaceFor(token);
+      assertName('campaign', campaign);
+      const dir = campaignDir(ns, campaign);
+      if (!fs.existsSync(dir)) {
+        throw new Error(`No campaign "${campaign}" in this namespace. campaign_list shows what exists.`);
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+      return { deleted: campaign };
+    },
 
     /** One-call orientation: where data lives, auth mode, campaigns. */
     info(token) {
