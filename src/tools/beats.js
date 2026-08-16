@@ -2,10 +2,12 @@
 // with a dramatic purpose and gating conditions. The MCP layer
 // exposes the *schema and walker* primitives, which are pure.
 //
-// `castArchetypes` is deliberately omitted: it takes an
-// `entityProvider` function, which can't cross the MCP wire as
-// data. Hosts that need archetype casting should import the
-// engine directly for that one call.
+// `castArchetypes` historically took an `entityProvider` function,
+// which can't cross the MCP wire — so it was omitted. Since 0.11.0
+// `beats_cast_archetypes` closes that gap DATA-SHAPED: the caller
+// sends the candidate entities as records (the kernel's 3.x npcs
+// registry is exactly this shape) and the server builds the provider
+// closure from them. The function stayed host-side; the data crosses.
 
 import { z } from 'zod';
 import { toolResult, toolError } from '../_result.js';
@@ -123,6 +125,24 @@ export function beatsTools(sessions) {
         try {
           const engine = sessions.get(session);
           return toolResult(engine.Beats.advance(thread, state));
+        } catch (err) { return toolError(err); }
+      }
+    }
+    ,
+    {
+      name: 'beats_cast_archetypes',
+      description: 'Fill a beat\'s requiredArchetypes from a list of candidate entities (id + archetypeRole + anything else, e.g. engine.npcs records). First candidate matching each slot\'s role wins; returns { cast, missing?, error? } exactly as the kernel\'s Beats.castArchetypes reports. Data-shaped: the entityProvider closure is built server-side from your list.',
+      input: {
+        beat: z.record(z.unknown()).describe('The beat whose requiredArchetypes need filling.'),
+        entities: z.array(z.record(z.unknown())).describe('Candidate entities; each needs at least { id, archetypeRole }.'),
+        session: SessionField
+      },
+      handler: async ({ beat, entities, session }) => {
+        try {
+          const engine = sessions.get(session);
+          const pool = Array.isArray(entities) ? entities : [];
+          const entityProvider = (slot) => pool.find((e) => e?.archetypeRole === slot.role) ?? null;
+          return toolResult(engine.Beats.castArchetypes(beat, { entityProvider }));
         } catch (err) { return toolError(err); }
       }
     }

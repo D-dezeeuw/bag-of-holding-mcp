@@ -48,7 +48,7 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
 }
 ```
 
-Restart Claude Desktop and the server's 100 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats, movesets, spellcasting, monster tiers, SRD lookups, sessions — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack, the scene-image gate and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
+Restart Claude Desktop and the server's 106 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats with data-shaped archetype casting, movesets, spellcasting, monster tiers, SRD lookups, sessions, solo sessions with shareable verified replays — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack, the scene-image gate and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
 
 New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks from zero to a running campaign — setup, memory tokens, the session ritual, semantic memory, and how to audit the dice.
 

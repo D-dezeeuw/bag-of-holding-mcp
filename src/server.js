@@ -42,6 +42,7 @@ import { memoryTools } from './tools/memory.js';
 import { campaignTools } from './tools/campaigns.js';
 import { worldTools } from './tools/world.js';
 import { guideTools } from './tools/guides.js';
+import { soloTools } from './tools/solo.js';
 import { imageTools } from './tools/images.js';
 
 const SERVER_NAME = 'bag-of-holding';
@@ -112,7 +113,10 @@ export function createServer(opts = {}) {
     ...campaignTools(memory, opts.memoryToken),
     ...imageTools(memory, opts.memoryToken, opts.images ?? {}),
     ...worldTools(),
-    ...guideTools()
+    ...guideTools(),
+    // Solo sessions + replay over the wire (since 0.11.0) — stateless
+    // snapshot round-trips; nothing lives server-side.
+    ...soloTools()
   ];
 
   for (const tool of allTools) {
