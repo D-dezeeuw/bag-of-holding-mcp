@@ -42,6 +42,13 @@ services:
       # it rather than serving every campaign to anyone who finds the URL,
       # so a half-configured deploy fails closed instead of open.
       BOH_MEMORY_TOKEN_HASHES: ${BOH_MEMORY_TOKEN_HASHES:?set it in .env — comma-separated sha256 of the tokens you issued}
+      # The hot-reloadable half of the allowlist, written by the admin panel
+      # and mounted read-only below. Unioned with the hashes above, so this
+      # stack keeps working with the file absent — which is also the
+      # bootstrap order: this server comes up before the panel exists.
+      # `:-` and not `:?` on purpose: unlike the hashes, an unset registry is
+      # a valid deployment (env-only provisioning), not a misconfiguration.
+      BOH_TENANT_REGISTRY: ${BOH_TENANT_REGISTRY:-/registry/tenants.json}
       # Internal Docker DNS, not the public hostname — no round trip
       # through NPM/TLS for containers sharing a network.
       BOH_EMBEDDINGS_URL: http://embeddings:80/v1
@@ -67,6 +74,12 @@ services:
       # always be rebuilt from this by dropping the Qdrant collection and
       # letting the next search re-embed, but nothing rebuilds the log.
       - boh-data:/data
+      # The tenant registry, READ-ONLY here. The admin panel is the only
+      # writer; this server only ever reads. `ro` is what enforces the
+      # single-writer split at the kernel rather than by convention — the
+      # panel and this server must never both be able to write a file that
+      # decides who is allowed in.
+      - boh-registry:/registry:ro
     networks:
       # Pinned like the other stacks on this host: NPM caches the upstream
       # IP at config load, so a rebuild-assigned dynamic IP would 502 every
@@ -197,5 +210,7 @@ networks:
 
 volumes:
   boh-data:                      # memory log + state vault (back this up)
+  boh-registry:                  # tenant allowlist; the admin stack writes it
+
   boh-qdrant:                    # vectors (rebuildable from boh-data)
   boh-hf-cache:                  # model weights (re-downloadable)

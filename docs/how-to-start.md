@@ -74,6 +74,10 @@ Rules of the shelf:
   shelf.
 - Where things land: `~/.bag-of-holding` (override with
   `BOH_DATA_DIR`).
+- On a **hosted** server the operator issues your token and it may
+  also carry a tier (how many scene images per hour you get). Nothing
+  changes on your side — it is still one string, still your shelf.
+  See [deployment.md](deployment.md) for how the allowlist works.
 
 Tell the model once, at the start of a session: *"My memory token is
 `<token>`, campaign `<name>` — pass them to every memory and state

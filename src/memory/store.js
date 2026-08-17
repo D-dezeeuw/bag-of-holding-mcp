@@ -34,6 +34,7 @@ import {
 import {
   createQdrantClient, pointId, DEFAULT_QDRANT_URL, DEFAULT_QDRANT_COLLECTION
 } from './qdrant.js';
+import { createTenantRegistry } from './registry.js';
 
 /**
  * Record types the memory log accepts. An enum (rather than
@@ -143,7 +144,20 @@ export function createMemoryStore(opts = {}) {
     (opts.tokenHashes ?? parseEnvHashes(process.env.BOH_MEMORY_TOKEN_HASHES))
       .map((h) => h.toLowerCase())
   );
-  const authRequired = tokenHashes.size > 0;
+  // The second allowlist source: a file the admin panel writes, re-read on
+  // change so provisioning and revocation no longer need a redeploy. See
+  // ./registry.js for the schema and the failure posture. `start()` throws
+  // on a corrupt file, which main() turns into a fail-closed exit 2.
+  const registry = createTenantRegistry({
+    file: opts.registryFile ?? process.env.BOH_TENANT_REGISTRY ?? null,
+    ttlMs: opts.registryTtlMs,
+    now: opts.now,
+    warn: opts.warn,
+  });
+  registry.start();
+  // Either source turns auth on. A configured-but-empty registry still
+  // counts: "no tenants yet" must mean nobody gets in, not everybody.
+  const authRequired = tokenHashes.size > 0 || registry.configured;
 
   // Semantic layer — lazily initialised on the first hybrid search
   // so a configured-but-down sidecar can never block startup, and
@@ -170,7 +184,32 @@ export function createMemoryStore(opts = {}) {
    * one at a time.
    */
   function isAuthorized(token) {
-    return !authRequired || (typeof token === 'string' && tokenHashes.has(sha256(token)));
+    if (!authRequired) return true;
+    if (typeof token !== 'string' || token === '') return false;
+    const hash = sha256(token);
+    // Env first: it is the break-glass path, so it must keep working even
+    // when the registry is empty, stale, or says otherwise.
+    if (tokenHashes.has(hash)) return true;
+    const entry = registry.get(hash);
+    return entry !== null && entry.status === 'active';
+  }
+
+  /**
+   * What the allowlist knows about this token beyond yes/no: which tier it
+   * plays on, whether it is suspended, and which source vouched for it.
+   * Null for a token no source knows.
+   *
+   * `tier` is null for an env tenant — the env allowlist carries no
+   * per-tenant data, so callers fall back to their own server-wide default
+   * rather than this module inventing one.
+   */
+  function tenantMeta(token) {
+    if (typeof token !== 'string' || token === '') return null;
+    const hash = sha256(token);
+    const entry = registry.get(hash);
+    if (entry !== null) return { ...entry, source: 'registry' };
+    if (tokenHashes.has(hash)) return { tier: null, status: 'active', ns: null, source: 'env' };
+    return null;
   }
 
   function namespaceFor(token) {
@@ -318,6 +357,7 @@ export function createMemoryStore(opts = {}) {
     dataDir,
     authRequired,
     isAuthorized,
+    tenantMeta,
 
     /** Append one memory record; returns it with its assigned id. */
     record(token, campaign, input) {

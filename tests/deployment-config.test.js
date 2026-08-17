@@ -97,3 +97,28 @@ test('the required auth variable has no default, so a misconfigured deploy fails
   // would boot with an empty allowlist.
   assert.match(compose, /BOH_MEMORY_TOKEN_HASHES:\s*\$\{BOH_MEMORY_TOKEN_HASHES:\?/);
 });
+
+test('the tenant registry is mounted read-only, so only the panel can write it', () => {
+  // The single-writer split is the whole architecture: the panel owns
+  // identity and writes the allowlist, this server only reads it. Dropping
+  // `:ro` would let a bug here rewrite who is allowed in, and would let two
+  // processes race on a file that has no locking.
+  assert.match(compose, /-\s*boh-registry:\/registry:ro/);
+  assert.doesNotMatch(compose, /-\s*boh-registry:\/registry\s*$/m, 'registry mount must carry :ro');
+});
+
+test('the registry variable has a default, unlike the token hashes', () => {
+  // `:?` on BOH_MEMORY_TOKEN_HASHES makes a missing allowlist a hard error.
+  // The registry is different: env-only provisioning is a legitimate
+  // deployment, and the file is legitimately absent before the panel first
+  // writes it, so `:-` (fall back) is correct here and `:?` would break the
+  // bootstrap order.
+  assert.match(compose, /BOH_TENANT_REGISTRY:\s*\$\{BOH_TENANT_REGISTRY:-/);
+});
+
+test('the registry volume is declared, not assumed to exist', () => {
+  // A compose file naming a volume it never declares is only an error at
+  // `up`, and only on a host that has not happened to create it already.
+  assert.match(compose, /^volumes:/m);
+  assert.match(compose.slice(compose.lastIndexOf('\nvolumes:')), /^\s{2}boh-registry:/m);
+});

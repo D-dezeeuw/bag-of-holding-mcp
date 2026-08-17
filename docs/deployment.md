@@ -116,6 +116,55 @@ campaign and rotate: drop the old hash from `.env`, add the new one, redeploy.
 Storage is namespaced by token, so rotating a token starts a **new empty
 shelf** — export first (`memory_export`), rotate, then `memory_import`.
 
+## The tenant registry (provisioning without a redeploy)
+
+`BOH_MEMORY_TOKEN_HASHES` is read once at startup, so every add or revoke
+costs a deploy. `BOH_TENANT_REGISTRY` points at a JSON file that is re-read
+within ~2s of changing:
+
+```json
+{
+  "version": 1,
+  "tenants": {
+    "9f86d081…": { "tier": "free",   "status": "active"    },
+    "5e884898…": { "tier": "patron", "status": "suspended" }
+  }
+}
+```
+
+The two sources are a **union**. An env token stays valid whatever the file
+says, which is what makes the variable a break-glass path: if the registry is
+wrong, deleting it is not the fix, but setting the variable always is.
+
+Rules worth knowing before you hand-edit it:
+
+- Only the exact string `active` authorises. A typo, a missing `status`, or
+  a value from a newer build all mean suspended — the expensive mistake is a
+  revoked tenant that keeps playing, not an active one you re-enable. Every
+  such case is logged, so a file that silently disables a table says why.
+- `tier` is passed through to the image gate, which is where tier names are
+  validated. An unknown one falls back to the server default.
+- `ns` is reserved for token rotation and nothing reads it yet.
+- Unknown keys are ignored, so a newer panel writing extra fields will not
+  break an older server.
+- **Only the panel writes this file.** It is mounted `:ro` here, and that is
+  enforcement, not documentation — two writers on a file with no locking is
+  how an allowlist gets truncated.
+
+Failure posture, which is deliberately asymmetric:
+
+| When | What happens |
+|---|---|
+| Corrupt at startup | Refuses to boot, exit 2 — a server that cannot read its allowlist must not serve a different one |
+| Corrupt at runtime | Keeps the last good copy, warns. A half-written file must not revoke every live table |
+| Absent at startup | Fine, empty. This is the bootstrap order: this server comes up before the panel exists |
+| Vanishes at runtime | Keeps the last good copy, warns once |
+| A directory at that path | Refuses to boot. This is the Docker bind-mount footgun — a mount whose source is missing makes the daemon create a directory, which would otherwise present as "every tenant 404s" with nothing in the log |
+
+Note the volume is declared here but written by the admin stack, which
+mounts it read-write. Ordering is not fragile: with no file, this server
+simply runs on the env allowlist alone.
+
 ## Connecting a client
 
 - **Claude Desktop**: Settings → Connectors → Add custom connector, Title +

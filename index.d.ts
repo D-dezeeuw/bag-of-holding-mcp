@@ -169,11 +169,34 @@ export interface EmbeddingsInfo {
 export interface MemoryStoreOptions {
   dataDir?: string;
   tokenHashes?: string[];
+  /**
+   * Path to a tenant registry JSON file (or `$BOH_TENANT_REGISTRY`). A
+   * second allowlist source, unioned with `tokenHashes`, re-read when it
+   * changes so tenants can be added, retiered, suspended or revoked
+   * without a restart. A corrupt file at startup throws.
+   */
+  registryFile?: string | null;
+  /** How stale a registry read may be, in ms. Default 2000. */
+  registryTtlMs?: number;
+  /** Clock for the registry TTL — tests drive this instead of sleeping. */
+  now?: () => number;
+  /** Where registry problems are reported. Default `console.error`. */
+  warn?: (message: string) => void;
   embeddings?: { url?: string; model?: string; dim?: number; apiKey?: string };
   qdrant?: { url?: string; collection?: string; apiKey?: string };
   /** Pre-built clients — tests and embedders; config is ignored where these are given. */
   embedder?: EmbeddingsClient;
   vectorIndex?: QdrantIndex;
+}
+
+/** What the allowlist knows about a token beyond whether it is allowed. */
+export interface TenantMeta {
+  /** Registry-assigned tier, or null when the tenant came from the env allowlist. */
+  tier: string | null;
+  status: 'active' | 'suspended';
+  /** Reserved for token rotation: an existing namespace this token maps to. */
+  ns: string | null;
+  source: 'registry' | 'env';
 }
 
 /**
@@ -190,6 +213,12 @@ export interface MemoryStore {
    * instead of failing every tool call one at a time.
    */
   isAuthorized(token?: string): boolean;
+  /**
+   * Tier / status / provenance for a token, or null when no allowlist
+   * source knows it. Unlike `isAuthorized`, this reports suspended tenants
+   * rather than hiding them — the door says 404, the operator needs why.
+   */
+  tenantMeta(token?: string): TenantMeta | null;
   record(token: string | undefined, campaign: string, input: MemoryRecordInput): MemoryRecord;
   search(
     token: string | undefined,

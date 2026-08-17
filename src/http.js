@@ -105,6 +105,11 @@ export function createHttpHandler(opts = {}) {
     // would confirm that a guessed URL had the right *shape*, and
     // turn the endpoint into an oracle for token brute-forcing.
     if (token === null || !store.isAuthorized(token)) {
+      // A token that WAS authorised and now isn't has been revoked or
+      // suspended in the registry. Drop its engine sessions on the way
+      // out: they hold a seeded RNG and a roll log for a table that can
+      // no longer reach them, and nothing else ever evicts this map.
+      if (token !== null) tenantSessions.delete(token);
       return send(res, 404, { error: 'Not found' });
     }
 
