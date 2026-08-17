@@ -43,6 +43,7 @@ import { campaignTools } from './tools/campaigns.js';
 import { worldTools } from './tools/world.js';
 import { guideTools } from './tools/guides.js';
 import { soloTools } from './tools/solo.js';
+import { narrationTools } from './tools/narration.js';
 import { imageTools } from './tools/images.js';
 
 const SERVER_NAME = 'bag-of-holding';
@@ -116,7 +117,11 @@ export function createServer(opts = {}) {
     ...guideTools(),
     // Solo sessions + replay over the wire (since 0.11.0) — stateless
     // snapshot round-trips; nothing lives server-side.
-    ...soloTools()
+    ...soloTools(),
+    // The sidecar-narrator slice of the client's prompt scaffolding
+    // (since 0.12.0) — see src/tools/narration.js for why it is only
+    // a slice.
+    ...narrationTools()
   ];
 
   for (const tool of allTools) {
