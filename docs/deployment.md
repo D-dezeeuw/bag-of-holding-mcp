@@ -236,3 +236,49 @@ security boundary here is branch protection and who holds
 Changing it requires a **new** `BOH_QDRANT_COLLECTION` name too, or every
 upsert 400s against the old collection's vector size. The memory log is
 unaffected; the new collection back-fills itself on the next search.
+
+## Capacity: how many tables one instance holds
+
+Measured on the shipped container shape (`cpus: "0.50"`,
+`mem_limit: 256m`, heap capped at 192 MB since 0.15.0). A "table" is
+one active campaign making ~6 tool calls a minute.
+
+| Configuration | Concurrent tables | Binding limit |
+| --- | --- | --- |
+| Pre-0.15.0 (no heap cap, unbounded rollLogs) | ~50–80 | memory — engine rollLogs never freed |
+| 0.15.0 defaults (rollLogCap 20k, idle eviction, heap cap) | **~250–400** | CPU (~80 tool calls/s absolute at 0.5 CPU) |
+| Full core (`cpus: "1.0"`) | ~500–800 | CPU |
+
+What degrades an instance first, in order:
+
+1. **One huge campaign.** All store I/O is synchronous; a 20,000-record
+   `memory_search` occupies the event loop for ~480 ms at 0.5 CPU and
+   every other table waits behind it. Keep campaigns to thousands of
+   records, not tens of thousands (the memory-protocol guide's
+   discipline does this naturally).
+2. **First semantic search on a large backlog.** The backfill embeds
+   the whole campaign through the sidecar (pipelined 4 batches at a
+   time since 0.15.0, 15 s deadline). Expect the first search after
+   enabling sidecars mid-campaign to be slow once, then normal.
+3. **Concurrent image renders.** Each in-flight render holds ~4–5 MB
+   transient (base64 inline) for up to 60 s. The per-campaign budget
+   gates volume, but there is no global render cap — keep
+   `BOH_IMAGE_TIER=free` on shared deployments.
+
+### Scaling past one instance: shard by token
+
+Two replicas must NEVER share one `BOH_DATA_DIR` (memory-record ids,
+the image-gate spend counter and the world pin are all last-write-wins
+files; engine sessions are in-RAM per process). The supported
+multi-instance shape is sharding, which works today with no code
+changes because the token already IS the tenant:
+
+1. Run N instances, each with its own volume (`BOH_DATA_DIR`) and its
+   own disjoint `BOH_MEMORY_TOKEN_HASHES` allowlist.
+2. Route on the URL path: `/mcp/<token>` → the instance whose
+   allowlist holds that token's hash. Any reverse proxy that can route
+   on a path prefix map can do this; unlisted tokens 404 on the wrong
+   instance anyway (fail closed).
+3. Moving a tenant = `memory_export` → import on the new shard (the
+   export carries memory, state and the world trio), then move the
+   hash between allowlists.
