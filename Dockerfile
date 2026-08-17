@@ -40,8 +40,9 @@ RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.co
 # Two separate traps, and the second one is silent:
 #
 #   1. npm 7+ installs unsatisfied peers from the REGISTRY, and both ranges
-#      deliberately point ahead of what is published (engine peer ^2.5.0 vs
-#      2.1.0 on npm; client peer ^0.8.0 vs 0.4.0). Left in place they fail the
+#      deliberately point ahead of what is published (engine peer
+#      >=2.5.0 <4.0.0 vs 2.1.0 on npm; client peer >=0.29.0 <1.0.0, not
+#      yet on npm at that version). Left in place they fail the
 #      build with ETARGET while the correct code sits in the dependency map.
 #   2. `npm pkg set dependencies.X=<git spec>` does NOT stick while X is still
 #      listed as a peer: a later `npm pkg` call re-reads the file, normalises
@@ -82,7 +83,14 @@ RUN mkdir -p /data && chown boh:boh /data
 USER boh
 ENV NODE_ENV=production \
     BOH_HTTP_PORT=8091 \
-    BOH_DATA_DIR=/data
+    BOH_DATA_DIR=/data \
+    # Cap V8's heap well under the compose file's mem_limit (256m).
+    # Without this, V8 derives its limit from HOST RAM and has no
+    # reason to collect before the cgroup OOM-kills the container —
+    # measured: 3,000 trivial requests drove RSS to 277 MB uncapped
+    # vs a steady 178 MB at 128 MB old-space. 192 leaves headroom
+    # for buffers, sockets and the base image.
+    NODE_OPTIONS=--max-old-space-size=192
 EXPOSE 8091
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.BOH_HTTP_PORT||8091)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

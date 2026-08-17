@@ -17,18 +17,20 @@ Model Context Protocol server for [`@zeeuw/bag-of-holding`](https://github.com/D
 - **Sessions per game.** One process can serve many concurrent games, each with its own seed and rollLog.
 - **Replay determinism from day one.** Save a seed + rollLog; reconstruct the exact sequence of rolls weeks later.
 - **Campaigns that survive the context window.** A namespaced, append-only memory log (`memory_*`) for the story and a state vault (`state_*`) for the numbers — on disk, searchable, exportable. See [Long campaigns](#long-campaigns-memory-saves-worlds-guides).
-- **A world to play in tonight.** The Greyfen March pack (`world_*`): a [Sundermark](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/roadmap.md) frontier province with regions, factions, NPCs, hooks and a GM-only secret ladder, layered so spoilers only ship when asked for.
+- **Three worlds to play in tonight.** Hand-authored packs (`world_*`), one per engine setting: **The Greyfen March** (a [Sundermark](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/roadmap.md) fen province), **The Gutterlight Yards** (a Brassgear salvage-city on a dying pressure main) and **The Hollow Vale** (four gothic domains whose Darklords were neighbours first) — each with regions, factions, NPCs, hooks, openers and a GM-only secret ladder, layered so spoilers only ship when asked for.
 - **A picture when the table asks for one.** `/observe` in practice: `image_*` is a deliberate, budgeted image call — off until a player turns it on, capped per rolling window, with a cooldown, so an AI DM cannot illustrate every paragraph. See [Scene images](#scene-images-observe).
-- **A DM that knows the drill.** How-to-play guides served as MCP prompts, resources *and* tools (`guide_*`): campaign loop, memory discipline, combat flow, session zero, DM style.
+- **A DM that knows the drill.** How-to-play guides served as MCP prompts, resources *and* tools (`guide_*`): campaign loop, memory discipline, combat flow, session zero, DM style, narration style, and the war-thread preset.
 - **Boundary-honest.** The *engine* stays stateless and pure math; persistence lives here in the host layer — exactly where the engine's [boundary doc](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/boundary.md) puts it.
 
 ## Install
 
-> **Not on npm yet.** Neither this package nor its engine peer
-> (`@zeeuw/bag-of-holding` ≥ 2.5.0) has been published, so the command below
-> will not work until they are. Until then, clone both repos side by side and
-> run from source (`npm install && npm start` here resolves the engine via its
-> `file:../bag-of-holding` dev link).
+> **Not on npm yet.** Neither this package nor its two peers
+> (`@zeeuw/bag-of-holding` ≥ 2.5.0 and `@zeeuw/bag-of-holding-client`
+> ≥ 0.29.0 — both hard runtime imports here) has been published at these
+> versions, so the command below will not work until they are. Until then,
+> clone all **three** repos side by side and run from source
+> (`npm install && npm start` here resolves both peers via their
+> `file:../bag-of-holding` / `file:../bag-of-holding-client` dev links).
 
 ```bash
 npm install -g @zeeuw/bag-of-holding-mcp
@@ -48,7 +50,7 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
 }
 ```
 
-Restart Claude Desktop and the server's 107 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats with data-shaped archetype casting, movesets, spellcasting, monster tiers, SRD lookups, sessions, solo sessions with shareable verified replays — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack, the scene-image gate and the guides) appear automatically, along with the `campaign-quickstart`, `session-recap` and `run-combat` prompts. Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
+Restart Claude Desktop and the server's 107 tools (dice, checks, combat with the full damage pipeline, rests, conditions, XP, beats with data-shaped archetype casting, movesets, spellcasting, monster tiers, SRD lookups, sessions, solo sessions with shareable verified replays, the sidecar narration prompt — plus campaign memory, state saves, generated world cartridges, the hand-authored world pack, the scene-image gate and the guides) appear automatically, along with prompts for every guide (`campaign-quickstart` and `run-combat` take arguments; `session-recap` is bespoke; the other five serve their guide directly). Tell Claude "you are my DM, use bag-of-holding for every mechanic" and play — or invoke the `campaign-quickstart` prompt and let the guide drive.
 
 New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks from zero to a running campaign — setup, memory tokens, the session ritual, semantic memory, and how to audit the dice.
 
@@ -64,7 +66,7 @@ New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks fr
 | **Conditions** | `conditions_list`, `conditions_apply`, `conditions_remove`, `conditions_has`, `conditions_exhaustion_gain`, `conditions_exhaustion_reduce`, `conditions_exhaustion_set`, `conditions_exhaustion_status` |
 | **XP** | `xp_level_for_xp`, `xp_next_level_threshold`, `xp_award_milestone`, `xp_thresholds`, `xp_proficiency_for_level` |
 | **Movesets** | `movesets_legal` |
-| **Beats** | `beats_archetype_roles`, `beats_validate`, `beats_make_empty`, `beats_thread_create`, `beats_thread_current`, `beats_is_ready`, `beats_is_complete`, `beats_thread_advance` |
+| **Beats** | `beats_archetype_roles`, `beats_cast_archetypes`, `beats_validate`, `beats_make_empty`, `beats_thread_create`, `beats_thread_current`, `beats_is_ready`, `beats_is_complete`, `beats_thread_advance` |
 | **Character** | `character_derive_sheet`, `character_skill_ability_map` |
 | **SRD lookups** | `srd_list`, `srd_get`, `srd_dump` — registries: species, classes, backgrounds, feats, spells, items, monsters |
 | **Spellcasting** | `spells_for_class`, `spells_classes_for`, `spells_max_level`, `spells_fresh_slots`, `spells_cast`, `spells_rest`, `spells_cantrip_damage` |
@@ -74,10 +76,12 @@ New to the whole idea? **[docs/how-to-start.md](docs/how-to-start.md)** walks fr
 | **State vault** | `state_save`, `state_load`, `state_list`, `state_delete` |
 | **World packs** (hand-authored, read-only) | `world_list`, `world_overview`, `world_region`, `world_faction`, `world_npc`, `world_hooks`, `world_secrets`, `world_search` |
 | **World cartridges** (generated; the playthrough — pin + patch ledger — persists per campaign in the token namespace) | `world_catalog`, `world_begin`, `world_node`, `world_powers`, `world_lineage`, `world_revisions`, `world_upgrade`, `world_export`, `world_commit`, `world_replay` |
+| **Solo sessions & replay** (stateless snapshot round-trips) | `solo_session_create`, `solo_session_act`, `solo_session_peek`, `replay_share`, `replay_verify` |
+| **Narration** (sidecar narrators only) | `narration_prompt` |
 | **Scene images** | `image_status`, `image_enable`, `image_disable`, `image_observe` |
 | **Guides** | `guide_list`, `guide_get` |
 
-Every engine tool accepts an optional `session` parameter; omit it to use the default (unseeded) singleton, fine for one-shot mechanic queries. For an actual campaign, always `engine_create_session({ seed: <int> })` first so rolls are reproducible.
+Engine-backed tools accept an optional `session` parameter; omit it to use the default (unseeded) singleton, fine for one-shot mechanic queries. For an actual campaign, always `engine_create_session({ seed: <int> })` first so rolls are reproducible. (The solo/replay family is deliberately session-free — those tools are stateless snapshot round-trips — and `narration_prompt` is a pure render.)
 
 ## Sessions and replay
 
@@ -288,13 +292,15 @@ being run while the server is writing: a torn trailing line comes back as
 
 ## Honest limits
 
-Since 0.2.0 the server does provide persistent narrative memory, mechanical checkpoints, a starter world and play guides. It still does **not** give you:
+The server provides persistent narrative memory, mechanical checkpoints, worlds (hand-authored and generated), solo play with verifiable replays and play guides. It still does **not** give you:
 
 - Map state or positioning.
 - Encounter design or DM judgment — the guides coach the model; the calls stay the model's.
 - Enforced voice consistency — `memory_search` makes consistency *possible*; the model still has to ask.
 - Semantic retrieval without the sidecars — the base server searches lexically (BM25); meaning-based recall needs the [docker sidecars](#semantic-memory-optional-sidecars) up.
 - Automatic recording — nothing is remembered unless the model (or you) calls `memory_record`. The end-of-session ritual in the quickstart guide is what makes a campaign durable.
+- Multi-process safety on one data dir — memory-record ids are minted from the log length, so run **one serving process per data dir** (a second replica sharing it can mint colliding ids; the fix rides with compaction).
+- Keyless grant redemption on this server — with no image API key, `image_observe` returns a prompt plus a one-shot grant for the *host app* to redeem (the browser client ships the redeemer); this server only mints grants, it has no redemption or refund endpoint.
 
 The engine is the math; the MCP is the wire plus the campaign's filing cabinet; the judgment is yours.
 

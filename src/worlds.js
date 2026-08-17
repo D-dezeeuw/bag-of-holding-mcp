@@ -11,7 +11,7 @@
 //
 // Both shapes of a world are kept per id:
 //   envelope — the parsed { v, data, c } artifact, pristine. catalogEntry
-//              and cellsOf work on this; a future revision resolver applies
+//              and cellsOf work on this; the resolve() below applies
 //              deltas to data and re-digests it.
 //   mounted  — mountCartridge's flattened view (data spread + digest/v),
 //              what the node/lineage reads serve.

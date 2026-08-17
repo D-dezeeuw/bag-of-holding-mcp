@@ -462,7 +462,7 @@ export function createWorlds(opts?: { dir?: string | null }): WorldRegistry;
 /**
  * A campaign's world binding: pinned at world_begin and stored in the
  * tenant namespace beside the memory log. `upgrades` is the audit trail
- * of explicit re-pins (empty until the revision feature lands).
+ * of explicit re-pins written by world_upgrade.
  */
 export interface WorldPin {
   v: number;
@@ -513,7 +513,7 @@ export interface Playthroughs {
    * upgrade ({ ok: false, conflicts }); dryRun reports without moving.
    */
   upgrade(token: string | undefined, campaign: string, toRevision: number, opts?: { dryRun?: boolean }): Record<string, unknown>;
-  /** Record that the party has seen a node whole (feeds the future revision publish gate). */
+  /** Record that the party has seen a node whole (feeds the revision publish gate in scripts/publish-revision.js). */
   observeRead(token: string | undefined, campaign: string, nodeId: string): void;
 }
 

@@ -1,7 +1,7 @@
 // Campaign guides — the server's how-to-play knowledge.
 //
 // The tool descriptions teach one call at a time; these guides
-// teach the loop. They exist because "63 tools appeared" is not a
+// teach the loop. They exist because "107 tools appeared" is not a
 // playbook: a host model needs to know when to roll, what to
 // record, and how the pieces (engine session, memory log, state
 // vault, world pack) compose into a campaign that survives weeks.
@@ -324,9 +324,10 @@ consequence, not a "nothing happens".
 
 - Open every scene with a want, an obstacle, and something
   sensory. End it the moment its question is answered.
-- Track tension with the engine's clocks: \`SceneClock\` mechanics
-  and beats (\`beats_*\`) exist so "rising danger" is a number, not
-  a vibe.
+- Track tension with the engine's numbers: beat threads
+  (\`beats_*\`) — and in solo play the session's scene clocks,
+  visible via \`solo_session_peek\` — exist so "rising danger" is a
+  number, not a vibe.
 - Spotlight is a resource: rotate it deliberately, and cut away at
   cliff edges ("meanwhile, at the tollgate—").
 
@@ -508,4 +509,25 @@ export function registerGuides(server) {
       }]
     })
   );
+
+  // Every remaining guide gets a plain prompt under its own id, so
+  // the "three surfaces" promise (prompt + resource + tool) holds
+  // for the whole registry, not just the two bespoke flows above.
+  const bespoke = new Set(['campaign-quickstart', 'combat-flow']);
+  for (const [id, guide] of Object.entries(GUIDES)) {
+    if (bespoke.has(id)) continue;
+    server.registerPrompt(
+      id,
+      { title: guide.title, description: guide.description, argsSchema: {} },
+      () => ({
+        messages: [{
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Follow this guide for the rest of the session:\n\n${guide.text}`
+          }
+        }]
+      })
+    );
+  }
 }

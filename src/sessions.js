@@ -16,6 +16,15 @@
 
 import { createEngine, Dice } from '@zeeuw/bag-of-holding';
 
+// Default rollLog ceiling for NAMED sessions. The engine's own default
+// is Infinity, which on a long-lived server means every 80-hour
+// campaign holds ~2-4 MB of rollLog forever — the capacity audit found
+// uncapped logs to be the deployment's binding memory limit. 20,000
+// entries (~3 MB worst case, weeks of play) keeps replay/audit useful
+// while bounding the worst case; hosts can still pass any explicit
+// rollLogCap through engine_create_session.
+export const DEFAULT_ROLL_LOG_CAP = 20_000;
+
 /**
  * Create a fresh session registry plus its default engine.
  *
@@ -68,15 +77,17 @@ export function createSessions() {
     if (seed !== undefined && seed !== null) {
       opts.rng = Dice.seededRng(seed);
     }
-    if (rollLogCap !== undefined && rollLogCap !== null) {
-      opts.rollLogCap = rollLogCap;
-    }
+    // Named sessions get a bounded log by default (see the constant's
+    // note); an explicit rollLogCap always wins.
+    opts.rollLogCap = (rollLogCap !== undefined && rollLogCap !== null)
+      ? rollLogCap
+      : DEFAULT_ROLL_LOG_CAP;
     const engine = createEngine(opts);
     engines.set(sessionId, engine);
     metadata.set(sessionId, {
       id: sessionId,
       seed: seed ?? null,
-      rollLogCap: rollLogCap ?? null,
+      rollLogCap: opts.rollLogCap,
       createdAt: Date.now()
     });
     return { id: sessionId, seed: seed ?? null };

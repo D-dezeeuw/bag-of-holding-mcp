@@ -728,7 +728,7 @@ export function createMemoryStore(opts = {}) {
     // A campaign binds to ONE world: the pin (world.json — which cartridge,
     // frozen at begin), an append-only patch ledger (world-ledger.jsonl),
     // and an observation set (world-observed.json — which entities the table
-    // has actually seen, the input to the future revision publish gate).
+    // has actually seen, the input to the revision publish gate in scripts/publish-revision.js).
     //
     // Same placement reasoning as the image gate: none of these are
     // state-vault keys, because state_save takes arbitrary JSON and a pin or

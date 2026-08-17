@@ -14,7 +14,7 @@ export function guideTools() {
   return [
     {
       name: 'guide_list',
-      description: 'List the server\'s how-to-play guides (campaign loop, memory discipline, combat flow, session zero, DM style). Read campaign-quickstart before running your first session; the rest as their moment arrives.',
+      description: 'List the server\'s how-to-play guides (campaign loop, memory discipline, combat flow, session zero, DM style, narration style, war-thread preset). Read campaign-quickstart before running your first session; the rest as their moment arrives.',
       input: {},
       // No try/catch: static frozen data, no failure mode — a dead
       // catch would just be untestable code.

@@ -92,8 +92,16 @@ test('guides are served as MCP prompts and resources over a real client connecti
     const { prompts } = await client.listPrompts();
     assert.deepEqual(
       prompts.map((p) => p.name).sort(),
-      ['campaign-quickstart', 'run-combat', 'session-recap']
+      [
+        'campaign-quickstart', 'dm-style', 'memory-protocol',
+        'narration-style', 'run-combat', 'session-recap',
+        'session-zero', 'war-thread'
+      ]
     );
+
+    // A generic guide prompt serves the guide's full markdown.
+    const style = await client.getPrompt({ name: 'narration-style', arguments: {} });
+    assert.ok(style.messages[0].content.text.includes('# Narration style'));
 
     // The quickstart prompt threads its arguments into the message…
     const withArgs = await client.getPrompt({

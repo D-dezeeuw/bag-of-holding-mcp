@@ -18,6 +18,7 @@
 // world packs / guides (static frozen data). The campaign guides
 // are additionally registered as MCP prompts and resources.
 
+import { createRequire } from 'node:module';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createSessions } from './sessions.js';
 import { createMemoryStore } from './memory/store.js';
@@ -47,7 +48,10 @@ import { narrationTools } from './tools/narration.js';
 import { imageTools } from './tools/images.js';
 
 const SERVER_NAME = 'bag-of-holding';
-const SERVER_VERSION = '0.6.0';
+// The version every MCP handshake advertises. Read from package.json
+// so it can never drift from the published release again (it sat at
+// a hardcoded '0.6.0' for six releases).
+const SERVER_VERSION = createRequire(import.meta.url)('../package.json').version;
 
 /**
  * Build an MCP server with every bag-of-holding tool registered.
