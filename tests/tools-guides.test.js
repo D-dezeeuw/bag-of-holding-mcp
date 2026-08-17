@@ -8,11 +8,11 @@ const tools = guideTools();
 const byName = new Map(tools.map((t) => [t.name, t]));
 const run = async (name, args = {}) => parse(await byName.get(name).handler(args));
 
-test('guide_list names the six guides with usable summaries', async () => {
+test('guide_list names the seven guides with usable summaries', async () => {
   const { data } = await run('guide_list');
   assert.deepEqual(
     data.guides.map((g) => g.id).sort(),
-    ['campaign-quickstart', 'combat-flow', 'dm-style', 'memory-protocol', 'session-zero', 'war-thread']
+    ['campaign-quickstart', 'combat-flow', 'dm-style', 'memory-protocol', 'narration-style', 'session-zero', 'war-thread']
   );
   for (const g of data.guides) assert.ok(g.title && g.description);
 });

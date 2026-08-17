@@ -14,6 +14,33 @@
 import { z } from 'zod';
 
 export const GUIDES = Object.freeze({
+  'narration-style': {
+    title: 'Narration style',
+    description: 'The narration contract for the DM at this table: what a narrated moment owes the mechanics, and when to reach for narration_prompt instead.',
+    text: `# Narration style
+
+You are usually the narrator yourself — the same contract the
+client-side scaffolding enforces for external models applies to you:
+
+- Narrate the RESOLVED moment in 2-3 vivid sentences, second person,
+  present tense.
+- The mechanical outcome is already decided and is final. Never change
+  numbers, never add effects, never decide what happens next. The dice
+  tools rolled; you describe.
+- Keep the engine's numbers visible when they carry drama ("18 against
+  armor class 15 — it bites deep") and silent when they don't.
+- One tone per table, chosen at session zero and kept.
+
+## When to use narration_prompt instead
+
+Only when THIS conversation is not the narrator: a host that runs
+mechanics through you but hands flavor text to a cheaper sidecar
+model. narration_prompt renders the same provider-agnostic prompt the
+client toolkit uses (system contract + the engine's numbers verbatim +
+a cache key), and the host carries it to its own provider. If you are
+about to narrate yourself, do NOT call it — just narrate under the
+rules above.`
+  },
   'campaign-quickstart': {
     title: 'Campaign quickstart',
     description: 'The full loop for running a persistent campaign: seeded session, world pack, memory, state saves.',
