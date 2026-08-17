@@ -7,6 +7,16 @@ import { worlds, getWorld, layered, deepFreeze } from '../src/world/index.js';
 // NPC that doesn't exist. These tests make the referential integrity
 // of every bundled pack a merge gate.
 
+test('one pack per engine setting is bundled', () => {
+  assert.deepEqual(
+    Object.keys(worlds).sort(),
+    ['greyfen-march', 'gutterlight-yards', 'hollow-vale']
+  );
+  assert.equal(worlds['greyfen-march'].setting, 'Sundermark');
+  assert.equal(worlds['gutterlight-yards'].setting, 'Brassgear');
+  assert.equal(worlds['hollow-vale'].setting, 'The Hollow Vale');
+});
+
 test('every bundled pack cross-references cleanly', () => {
   for (const world of Object.values(worlds)) {
     const regionIds = Object.keys(world.regions);
