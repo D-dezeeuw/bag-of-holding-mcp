@@ -12,11 +12,13 @@ the model to be a decent DM. This page takes you from nothing to
 
 - **Node ≥ 22** and an MCP host. The walkthrough uses Claude Desktop;
   any host that speaks MCP over stdio works the same.
-- **This server.** Until the npm release lands, clone the two repos
-  side by side and install:
+- **This server.** Until the npm release lands, clone the three repos
+  side by side and install (the server imports both the engine and
+  the client toolkit via `file:` links):
 
   ```bash
   git clone https://github.com/D-dezeeuw/bag-of-holding.git
+  git clone https://github.com/D-dezeeuw/bag-of-holding-client.git
   git clone https://github.com/D-dezeeuw/bag-of-holding-mcp.git
   cd bag-of-holding-mcp && npm install
   ```
@@ -41,8 +43,9 @@ Add the server to `claude_desktop_config.json` (macOS:
 ```
 
 Restart the host. You should see the bag-of-holding tools appear
-(84 of them), plus three prompts: `campaign-quickstart`,
-`session-recap`, `run-combat`.
+(107 of them), plus a prompt per guide — start with
+`campaign-quickstart`; `session-recap` and `run-combat` cover the
+two most common rituals.
 
 **Smoke test** — ask the model:
 
@@ -80,6 +83,11 @@ Tell the model once, at the start of a session: *"My memory token is
 tool."*
 
 ## 4. Session zero → first campaign
+
+Opening any sitting, the guide's step zero is `campaign_list` — it
+shows every campaign in your namespace with worlds and
+last-played times, so the table picks "resume one of these or begin
+anew" before anything else happens.
 
 The fastest start is the built-in prompt: in Claude Desktop, pick
 **campaign-quickstart** from the prompt menu (＋), give it a campaign
@@ -136,6 +144,15 @@ Useful table phrases the tools understand well:
 | "Recap last session" | `memory_recent` type `session-summary` |
 | "That fact was wrong, fix it" | corrected `memory_record`, then `memory_forget` the bad id |
 | "Prove that crit was real" | `engine_get_roll_log` / `engine_verify_log` |
+| "Show me a picture of this scene" | `image_enable` once, then `image_observe` (budgeted — see the README) |
+| "Make me a world book" | `world_export` — an EPUB in a player or GM cut |
+
+Beyond the core loop the server also carries **generated world
+cartridges** (`world_catalog` → `world_begin` → play patches via
+`world_commit`, replayable with `world_replay`), **solo sessions**
+with shareable verified replays (`solo_session_*`, `replay_*`), and a
+**sidecar narration prompt** (`narration_prompt`) for deployments
+that pipe resolutions to a second, cheaper narrator model.
 
 ## 6. Turn on semantic memory (the long-campaign upgrade)
 

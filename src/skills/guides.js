@@ -1,7 +1,7 @@
 // Campaign guides — the server's how-to-play knowledge.
 //
 // The tool descriptions teach one call at a time; these guides
-// teach the loop. They exist because "63 tools appeared" is not a
+// teach the loop. They exist because "107 tools appeared" is not a
 // playbook: a host model needs to know when to roll, what to
 // record, and how the pieces (engine session, memory log, state
 // vault, world pack) compose into a campaign that survives weeks.

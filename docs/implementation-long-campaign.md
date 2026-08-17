@@ -1,6 +1,11 @@
 # Implementation plan — long-campaign support
 
-**Status:** implemented in 0.2.0 (this PR) unless marked *later*.
+**Status:** historical design record, written against 0.2.0. Its core
+shipped then; the tool counts and follow-up list below reflect that
+era (the server has since grown to 107 tools across campaigns,
+cartridges, images, solo sessions and narration — see the README's
+tool inventory for the live surface). Kept for the reasoning, not as
+a status page.
 **Scope:** this repo only. The engine (`@zeeuw/bag-of-holding`) is
 untouched; every feature below lives on the host side of the
 [boundary contract](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/boundary.md).
@@ -135,7 +140,7 @@ Division of labour after this change:
   entities/tags, blended with importance and log-position recency.
   Deterministic: same store + same query → same ranking.
 
-### Tools (21 new; 63 → 84 total)
+### Tools (21 new at the time; 63 → 84, since grown to 107)
 
 | Group | Tools |
 | --- | --- |
@@ -168,8 +173,9 @@ play.
 
 ### Guides — the "skills" surface (`src/skills/`)
 
-Five markdown guides: `campaign-quickstart`, `memory-protocol`,
-`combat-flow`, `session-zero`, `dm-style`. Exposed **three** ways
+Markdown guides — five at the time (`campaign-quickstart`,
+`memory-protocol`, `combat-flow`, `session-zero`, `dm-style`), seven
+today (+ `narration-style`, `war-thread`). Exposed **three** ways
 because host support varies:
 
 - **MCP prompts** (`registerPrompt`) — user-invokable in hosts that
@@ -214,20 +220,20 @@ Repo contract is 100/100/100 line/branch/function coverage plus
 - `server.test.js` — new tools registered; prompts/resources exercised
   end-to-end over an in-memory MCP client/server pair.
 
-## Follow-ups (explicitly out of this PR)
+## Follow-ups (as written for 0.2.0 — statuses updated since)
 
-- **Solo/Session orchestrator tools** — the engine's
-  `Session.create/serialize/restore` and `Replay.share` are not yet
-  exposed as MCP tools; `state_save`/`state_load` already store their
-  payloads, so this is a natural next surface.
+- **Solo/Session orchestrator tools** — ✅ shipped in 0.11.0
+  (`solo_session_create/act/peek`, `replay_share`, `replay_verify`,
+  stateless snapshot round-trips in `src/tools/solo.js`).
 - **Memory compaction** via MCP sampling (ask the *host* model to
   summarise old records — keeps the server model-free), plus pruning
   of stale Qdrant points left behind by `memory_forget` (harmless
   today thanks to live-set intersection, but they accumulate).
-- **World-pack semantic search** — `world_search` is lexical only;
-  embedding the packs through the same sidecars is mechanical now.
-- **More worlds** — Brassgear and Hollow Vale slices, once the engine's
-  `3.3.0` setting plugin contract exists to share shapes with.
-- **HTTP transport + billing** for the hosted tier — the token-hash
-  allowlist, tenant namespacing and Qdrant isolation are already the
-  shapes that tier needs.
+  Still open; multi-process id minting rides with it.
+- **World-pack semantic search** — still open; `world_search` remains
+  lexical (`rankRecords`).
+- **More worlds** — Brassgear and Hollow Vale slices (the engine's
+  setting plugin contract shipped at 3.3.0, so the shapes exist).
+- **HTTP transport** — ✅ shipped (`src/http.js`, `bin/http.js`,
+  tenant-pinned `POST /mcp/<token>`); **billing** for the hosted tier
+  remains that product's concern, out of scope here.
