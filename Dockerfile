@@ -77,9 +77,22 @@ COPY --from=builder /build/node_modules ./node_modules
 COPY package.json index.js index.d.ts ./
 COPY src/ ./src/
 COPY bin/ ./bin/
-# The data volume is mounted here; create it owned by boh so the first
-# write works under a read_only root filesystem.
-RUN mkdir -p /data && chown boh:boh /data
+# Both volume mount points, created owned by boh.
+#
+# This is not cosmetic and it is not only about THIS container. When Docker
+# first mounts an EMPTY named volume, it seeds the mount point's ownership
+# from the image path underneath it — and if the image has no such path, the
+# volume ends up owned by root. Whichever container mounts the volume first
+# decides that, permanently.
+#
+# /data has always been here, which is why it works. /registry was not, and
+# the failure was invisible from this side: this container mounts the
+# registry READ-ONLY and never writes, so a root-owned volume looked fine
+# here and surfaced in the admin panel as EACCES on the first token mint.
+#
+# So both images that touch this volume create it owned by boh (uid 10101),
+# and the deploy order stops mattering.
+RUN mkdir -p /data /registry && chown boh:boh /data /registry
 USER boh
 ENV NODE_ENV=production \
     BOH_HTTP_PORT=8091 \
