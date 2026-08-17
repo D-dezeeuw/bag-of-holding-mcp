@@ -98,6 +98,21 @@ test('the required auth variable has no default, so a misconfigured deploy fails
   assert.match(compose, /BOH_MEMORY_TOKEN_HASHES:\s*\$\{BOH_MEMORY_TOKEN_HASHES:\?/);
 });
 
+test('the money-spending keys stay opt-in, and fail loudly when half-set', () => {
+  // Both provider keys are commented out by default: a deployment that renders
+  // images or relays inference is spending the operator's account on behalf of
+  // every tenant, and that must be a decision someone made rather than a
+  // default they inherited. When uncommented they use `:?` (error if unset)
+  // for the same reason as the token hashes — an empty key is not "off", it is
+  // a misconfiguration that would otherwise 401 every turn silently.
+  for (const key of ['BOH_IMAGE_API_KEY', 'BOH_LLM_API_KEY']) {
+    const line = compose.split('\n').find((l) => l.includes(`${key}:`));
+    assert.ok(line, `${key} must appear in the compose file, even if commented`);
+    assert.ok(line.trim().startsWith('#'), `${key} must ship commented out`);
+    assert.match(line, new RegExp(`${key}:\\s*\\$\\{${key}:\\?`), `${key} must use :? not :-`);
+  }
+});
+
 test('the tenant registry is mounted read-only, so only the panel can write it', () => {
   // The single-writer split is the whole architecture: the panel owns
   // identity and writes the allowlist, this server only reads it. Dropping

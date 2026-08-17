@@ -180,6 +180,54 @@ simply runs on the env allowlist alone.
 - **Local stdio** is unchanged: point at `bin/cli.js`. That path keeps the
   optional `token` tool parameter, since one desktop process may serve
   several tables.
+- **A browser game** talks to the relay instead of the MCP surface: base URL
+  `https://<host>/mcp/<token>/v1`, token as the API key. See below.
+
+## The inference relay (optional, and it spends your money)
+
+With `BOH_LLM_API_KEY` set, the tenant path also serves an OpenAI-compatible
+relay, so a token can pay for prose and not just storage:
+
+```text
+POST /mcp/<token>/v1/chat/completions   streaming or not
+GET  /mcp/<token>/v1/models             the ids this tier may use
+GET  /mcp/<token>/v1/status             tier + budget; answers even with no key
+```
+
+Leave the key unset and the deployment sells no inference: `/v1/status` reports
+`relayEnabled: false` for a valid token and the other two answer 503, so a host
+falls back to asking the player for their own key. Every relayed call is capped
+by the tenant's tier (free 150k tokens/day, patron 2M, studio 10M) and can only
+reach the model ids that tier names — see the README section for the full list
+of what stops it being an open proxy.
+
+Three things about this deployment specifically:
+
+1. **The budget file is per tenant, not per campaign**:
+   `$BOH_DATA_DIR/t-<hash>/relay-budget.json`, beside the campaign directories
+   rather than inside one. Per campaign it would refill every time a player
+   started a new campaign. It is last-write-wins like the image gate, which is
+   the other reason two replicas must not share a data dir.
+
+2. **NPM must not buffer the stream.** A relayed narration is server-sent
+   events, and nginx's default proxy buffering holds them until the response
+   completes — the player sees nothing for twenty seconds and then the whole
+   paragraph at once. In the proxy host's Advanced tab:
+
+   ```nginx
+   proxy_buffering off;
+   proxy_cache off;
+   proxy_read_timeout 300s;   # longer than RELAY_TIMEOUT_MS
+   ```
+
+   The MCP surface itself streams too, so this is worth setting either way.
+
+3. **CORS is answered by the app, not the proxy.** The relay returns
+   `access-control-allow-origin: *` and handles `OPTIONS` itself. Do not add a
+   second set of CORS headers in NPM: a browser rejects a response carrying two
+   of them, and the failure looks exactly like a network error. The wildcard is
+   deliberate — the credential is the token in the URL, not a cookie, so there
+   is no ambient authority an origin check would protect.
 
 ## Operating it
 
@@ -324,8 +372,10 @@ What degrades an instance first, in order:
 ### Scaling past one instance: shard by token
 
 Two replicas must NEVER share one `BOH_DATA_DIR` (memory-record ids,
-the image-gate spend counter and the world pin are all last-write-wins
-files; engine sessions are in-RAM per process). The supported
+the image-gate spend counter, the relay budget and the world pin are
+all last-write-wins files; engine sessions are in-RAM per process).
+Sharing one would also mean two processes each granting a tenant the
+full token allowance. The supported
 multi-instance shape is sharding, which works today with no code
 changes because the token already IS the tenant:
 

@@ -66,6 +66,15 @@ services:
       # BOH_IMAGE_API_KEY: ${BOH_IMAGE_API_KEY:?set it in .env to render images server-side}
       BOH_IMAGE_MODEL: ${BOH_IMAGE_MODEL:-google/gemini-2.5-flash-image}
       BOH_IMAGE_TIER: ${BOH_IMAGE_TIER:-free}
+      # Inference relay. Same opt-in shape as the image key, and the same
+      # warning with a bigger number attached: with this set, every relayed
+      # turn from every tenant bills your provider account, which is what the
+      # per-tenant token budget is protecting. Leave it commented and the
+      # relay reports itself off, so hosts ask the player for their own key.
+      # `:?` and not `:-` for the reason above: absent is off, empty is a
+      # misconfiguration that must fail loudly rather than half-work.
+      # BOH_LLM_API_KEY: ${BOH_LLM_API_KEY:?set it in .env to sell inference to tenants}
+      BOH_LLM_TIER: ${BOH_LLM_TIER:-free}
       # BOH_QDRANT_API_KEY is intentionally absent — see the qdrant service.
       # Uncomment BOTH lines together if you ever enable the key.
       # BOH_QDRANT_API_KEY: ${QDRANT_API_KEY}

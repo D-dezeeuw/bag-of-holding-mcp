@@ -19,6 +19,7 @@ Model Context Protocol server for [`@zeeuw/bag-of-holding`](https://github.com/D
 - **Campaigns that survive the context window.** A namespaced, append-only memory log (`memory_*`) for the story and a state vault (`state_*`) for the numbers — on disk, searchable, exportable. See [Long campaigns](#long-campaigns-memory-saves-worlds-guides).
 - **Three worlds to play in tonight.** Hand-authored packs (`world_*`), one per engine setting: **The Greyfen March** (a [Sundermark](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/roadmap.md) fen province), **The Gutterlight Yards** (a Brassgear salvage-city on a dying pressure main) and **The Hollow Vale** (four gothic domains whose Darklords were neighbours first) — each with regions, factions, NPCs, hooks, openers and a GM-only secret ladder, layered so spoilers only ship when asked for.
 - **A picture when the table asks for one.** `/observe` in practice: `image_*` is a deliberate, budgeted image call — off until a player turns it on, capped per rolling window, with a cooldown, so an AI DM cannot illustrate every paragraph. See [Scene images](#scene-images-observe).
+- **A tenant token that can pay for the prose too.** Optional: with a provider key configured, the same tenant URL also serves an OpenAI-compatible inference relay (`/mcp/<token>/v1/...`) under a per-tenant, per-tier token budget — so a browser game can hand a player one token instead of asking them for an API key. See [the tenant relay](#selling-inference-the-tenant-relay-optional).
 - **A DM that knows the drill.** How-to-play guides served as MCP prompts, resources *and* tools (`guide_*`): campaign loop, memory discipline, combat flow, session zero, DM style, narration style, and the war-thread preset.
 - **Boundary-honest.** The *engine* stays stateless and pure math; persistence lives here in the host layer — exactly where the engine's [boundary doc](https://github.com/D-dezeeuw/bag-of-holding/blob/main/docs/boundary.md) puts it.
 
@@ -224,6 +225,69 @@ Tiers are resolved by the deployment, never by the model — no tool accepts a
 for tier X" is `tierFor(token, env)` in [`src/images.js`](src/images.js), since
 the memory token already *is* the tenant.
 
+## Selling inference: the tenant relay (optional)
+
+A tenant token buys storage — campaigns, worlds, an image tier. It buys no
+*prose*, because every host that wants prose holds a provider key of its own.
+That is true of a desktop MCP host (the model **is** the host) and false of the
+deployment people actually ask about: a browser game, where the player has no
+key and the operator does. A player handed a tenant token had nothing to paste
+into such a host, because the token is not an inference credential.
+
+Set a provider key and it becomes one, through an OpenAI-compatible relay under
+the same tenant path:
+
+```bash
+BOH_LLM_API_KEY=sk-...                    # unset = this deployment sells no inference
+BOH_LLM_URL=https://openrouter.ai/api/v1  # anything OpenAI-compatible
+BOH_LLM_TIER=free                         # tier for tenants the registry hasn't priced
+BOH_LLM_MODEL_ALLOW=                      # extra ids for a private catalog; only ever adds
+```
+
+```text
+POST /mcp/<token>/v1/chat/completions   → a relayed turn (streaming supported)
+GET  /mcp/<token>/v1/models             → the ids this tenant's tier may use
+GET  /mcp/<token>/v1/status             → tier, models, budget — what a wizard reads
+```
+
+A browser host needs no new code for this: point the client toolkit's `baseUrl`
+at `/mcp/<token>/v1` with the token as the key (`tenantConfig()` does exactly
+that) and every existing call path works, because the relay speaks the contract
+the provider speaks.
+
+What keeps it from being an open proxy on your account:
+
+- **the tier decides the models.** A `free` tenant reaches only `:free` ids and
+  cannot generate images on your key at all; paid tiers reach the paid table.
+  Asking for a model the tier does not name is a 400, which the client library
+  reads as "try another model" and recovers from on its own.
+- **the tier decides the tokens.** A rolling per-tenant window — free
+  150k/day, patron 2M/day, studio 10M/day — checked before a call starts and
+  charged with what the provider actually reported. A spent window is a **402**
+  (not a 429: the client walks its fallback chain on a rate limit, and every
+  entry would fail the same per-tenant check).
+- **fields are forwarded by allowlist.** `n: 50`, `logprobs`, another
+  deployment's routing preferences: dropped. A caller cannot spend your key on
+  knobs nobody here priced.
+- **the tier comes from the registry**, per tenant, never from the request —
+  same rule as images, and deliberately *not* the same env var, so one generous
+  image setting does not silently become a generous token allowance.
+- **streams are charged too.** `stream_options.include_usage` is forced on,
+  because a stream that reports no usage is a call the budget cannot charge.
+  A stream that dies early is charged what it saw, which is 0 — the honest
+  number when nothing reported a cost.
+
+The budget math is [`llm/relaygate.js`](https://github.com/D-dezeeuw/bag-of-holding-client/blob/main/src/llm/relaygate.js)
+in the client toolkit, pure and shared for the same reason the image gate is:
+the browser reads the same numbers back off `/v1/status` that this server
+enforces, so the two cannot drift into different answers about what is left.
+
+With no key configured, `/v1/status` still answers for a valid token — with
+`relayEnabled: false` and a hint to bring your own key — while the other two
+endpoints return 503. "Your token is fine, this deployment just doesn't sell
+inference" is a different sentence from "your token is not ours", and a setup
+wizard needs to be able to say it.
+
 ## Embedding in your own host
 
 If you're building an MCP host instead of using Claude Desktop, you can wire the same tool surface to a custom transport:
@@ -301,6 +365,8 @@ The server provides persistent narrative memory, mechanical checkpoints, worlds 
 - Automatic recording — nothing is remembered unless the model (or you) calls `memory_record`. The end-of-session ritual in the quickstart guide is what makes a campaign durable.
 - Multi-process safety on one data dir — memory-record ids are minted from the log length, so run **one serving process per data dir** (a second replica sharing it can mint colliding ids; the fix rides with compaction).
 - Keyless grant redemption on this server — with no image API key, `image_observe` returns a prompt plus a one-shot grant for the *host app* to redeem (the browser client ships the redeemer); this server only mints grants, it has no redemption or refund endpoint.
+- Speech through the relay — the relay carries `chat/completions` and `models`, not `audio/*`. The default provider hosts no TTS/STT models (both tier tables leave those slots null), so a deployment wanting speech points `BOH_LLM_URL` at a provider that has them and its hosts call those endpoints directly.
+- Exact accounting under concurrency — the per-tenant budget is last-write-wins, like the image gate. Two turns finishing in the same instant can lose one charge between them; the next call re-reads and carries on. A lock on the hot path would cost more than the tokens it saves.
 
 The engine is the math; the MCP is the wire plus the campaign's filing cabinet; the judgment is yours.
 

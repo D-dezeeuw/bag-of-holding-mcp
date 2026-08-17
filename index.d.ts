@@ -284,6 +284,13 @@ export interface MemoryStore {
    */
   imageGateLoad(token: string | undefined, campaign: string): ImageGate | null;
   imageGateSave(token: string | undefined, campaign: string, gate: ImageGate): ImageGate;
+  /**
+   * The tenant's inference budget, or null when nothing has been relayed yet.
+   * Per tenant, not per campaign: it meters spend against the operator's
+   * provider key, which a per-campaign file would refill on every new campaign.
+   */
+  relayBudgetLoad(token: string | undefined): RelayBudget | null;
+  relayBudgetSave(token: string | undefined, budget: RelayBudget): RelayBudget;
 }
 
 /**
@@ -339,6 +346,70 @@ export function splitDataUri(uri: unknown): { mimeType: string; data: string } |
 export const DEFAULT_IMAGE_MODEL: string;
 /** The API base used when BOH_IMAGE_URL is unset. */
 export const DEFAULT_IMAGE_BASE_URL: string;
+
+// ============================================================
+// Inference relay
+// ============================================================
+
+/**
+ * Persisted per-tenant inference budget. Like `ImageGate`, the shape and every
+ * transition are owned by `@zeeuw/bag-of-holding-client` (`llm/relaygate.js`);
+ * this server stores it, applies it, and charges it.
+ */
+export interface RelayBudget {
+  v: number;
+  tier: string;
+  budget: number;
+  windowMs: number;
+  spent: number;
+  windowStart: number;
+  calls: number;
+  tokens: number;
+}
+
+/** Relay configuration, or null when this deployment sells no inference. */
+export interface RelayConfig {
+  key: string;
+  baseUrl: string;
+  appTitle: string;
+}
+
+/**
+ * Read BOH_LLM_API_KEY / BOH_LLM_URL / BOH_LLM_APP_TITLE from an environment.
+ * Null means `/v1/status` reports `relayEnabled: false` and the completion
+ * endpoint answers 503, so a host asks the player for their own key instead.
+ */
+export function resolveRelayConfig(env?: Record<string, string | undefined>): RelayConfig | null;
+
+/**
+ * Which relay tier a tenant spends on: the registry's tier, else BOH_LLM_TIER,
+ * else `free`. Never reads BOH_IMAGE_TIER — pictures and tokens are priced
+ * separately on purpose.
+ */
+export function relayTierFor(
+  meta: Pick<TenantMeta, 'tier'> | null | undefined,
+  env?: Record<string, string | undefined>
+): string;
+
+/** The model map a tier may reach (the client toolkit's free/paid tables). */
+export function modelsForTier(tier: string): Record<string, string | null>;
+
+/** Every model id this tier may ask for, including the fallback chains. */
+export function allowedModels(tier: string, env?: Record<string, string | undefined>): Set<string>;
+
+/**
+ * Decide whether a completion may be relayed. Either a refusal ready to
+ * serialize (400 model-not-allowed, 402 budget-exhausted, 400 invalid-request)
+ * or the upstream body to send.
+ */
+export function planCompletion(args: {
+  tier: string;
+  body: unknown;
+  budget: RelayBudget | null;
+  env?: Record<string, string | undefined>;
+  now?: number;
+}): { status: 200; model: string; upstream: Record<string, unknown> }
+  | { status: number; body: { error: { message: string; type: string; [k: string]: unknown } } };
 
 /** Render one prompt. Never rejects: failures come back as `{ ok: false, error }`. */
 export function renderImage(
@@ -578,12 +649,26 @@ export interface HttpOptions {
    */
   worlds?: WorldRegistry;
   worldsDir?: string | null;
+  /**
+   * Relay seams. `env` supplies BOH_LLM_* (defaults to the process
+   * environment) and is resolved once at construction, while `relayConfig`,
+   * `relayFetch` and `now` let tests drive the provider and the budget clock
+   * without either. Passing `relayConfig: null` is a deployment that sells no
+   * inference.
+   */
+  env?: Record<string, string | undefined>;
+  now?: () => number;
+  relayConfig?: RelayConfig | null;
+  relayFetch?: typeof fetch;
 }
 
 /**
  * Build the request listener for the streamable-HTTP surface:
  * `POST /mcp/<token>` (the token is the tenant) plus an open
- * `GET /health`. Unknown tokens and unknown paths both 404.
+ * `GET /health`. With a provider key configured, the same tenant path also
+ * serves the OpenAI-compatible relay — `POST /mcp/<token>/v1/chat/completions`,
+ * `GET /mcp/<token>/v1/models`, `GET /mcp/<token>/v1/status`. Unknown tokens
+ * and unknown paths both 404.
  */
 export function createHttpHandler(opts?: HttpOptions): {
   store: MemoryStore;

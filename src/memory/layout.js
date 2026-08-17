@@ -6,6 +6,7 @@
 // learned about a new file, so they share these instead. Everything here is
 // pure and takes `dataDir` explicitly; nothing opens a file.
 //
+//   <dataDir>/<ns>/relay-budget.json                inference budget (per TENANT)
 //   <dataDir>/<ns>/<campaign>/memory.jsonl          append-only narrative log
 //   <dataDir>/<ns>/<campaign>/state/<key>.json      mechanical checkpoints
 //   <dataDir>/<ns>/<campaign>/image-gate.json       render budget
@@ -16,9 +17,18 @@
 // The three files outside `state/` are outside it on purpose: the state vault
 // is addressable by the model through `state_save`, and a budget or a world
 // pin that a tool could overwrite would not be much of a budget or a pin.
+//
+// The relay budget sits a level higher again, beside the campaigns rather than
+// inside one, because what it meters is the tenant's spend against the
+// operator's provider key — per campaign it would refill every time a player
+// started a new one. It is a file, not a directory, so every campaign
+// enumerator here and in operator.js walks straight past it (they all filter
+// `isDirectory()`).
 
 import path from 'node:path';
 
+export const namespaceDirOf = (dataDir, ns) => path.join(dataDir, ns);
+export const relayBudgetFileOf = (dataDir, ns) => path.join(dataDir, ns, 'relay-budget.json');
 export const campaignDirOf = (dataDir, ns, campaign) => path.join(dataDir, ns, campaign);
 export const memoryFileOf = (dataDir, ns, campaign) => path.join(campaignDirOf(dataDir, ns, campaign), 'memory.jsonl');
 export const stateDirOf = (dataDir, ns, campaign) => path.join(campaignDirOf(dataDir, ns, campaign), 'state');
