@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpHandler, listen, main } from '../src/http.js';
+import { createSessions } from '../src/sessions.js';
 import { createMemoryStore } from '../src/memory/store.js';
 import { bakeCartridge } from '@zeeuw/bag-of-holding-client';
 
@@ -388,4 +389,51 @@ test('a playthrough spans SEPARATE HTTP connections — begin, then commit, then
     const other = await cb.callTool({ name: 'world_replay', arguments: { campaign: 'fen' } });
     assert.equal(other.isError, true, "another tenant's campaign name is a different campaign");
   } finally { await cb.close(); }
+});
+
+test('idle tenants are evicted; active ones survive; durable state is untouched', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-evict-'));
+  const built = createHttpHandler({
+    memory: { dataDir: dir, tokenHashes: [sha256(TOKEN_A), sha256(TOKEN_B)] },
+    sessionTtlHours: 1
+  });
+  const srv = http.createServer(built.handler);
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const url = (t) => new URL(`http://127.0.0.1:${srv.address().port}/mcp/${t}`);
+  try {
+    // Tenant A opens a seeded session and records a durable memory.
+    const a = new Client({ name: 'test-host', version: '0.0.0' });
+    await a.connect(new StreamableHTTPClientTransport(url(TOKEN_A)));
+    await a.callTool({ name: 'engine_create_session', arguments: { id: 'fen', seed: 7 } });
+    await a.callTool({ name: 'memory_record', arguments: { campaign: 'fen', type: 'event', text: 'The bell rang thirteen.' } });
+
+    // A sweep dated two hours in the future evicts the idle registry…
+    built.sweepSessions(Date.now() + 2 * 3_600_000);
+    const a2 = new Client({ name: 'test-host', version: '0.0.0' });
+    await a2.connect(new StreamableHTTPClientTransport(url(TOKEN_A)));
+    const gone = await a2.callTool({ name: 'dice_roll', arguments: { spec: '1d6', session: 'fen' } });
+    assert.equal(gone.isError, true, 'the evicted engine session is gone');
+
+    // …but the store is untouched: the memory survives eviction.
+    const recent = await a2.callTool({ name: 'memory_recent', arguments: { campaign: 'fen' } });
+    assert.ok(JSON.stringify(recent).includes('thirteen'));
+
+    // A fresh registry works immediately (next sitting just re-creates).
+    const again = await a2.callTool({ name: 'engine_create_session', arguments: { id: 'fen', seed: 8 } });
+    assert.equal(again.isError ?? false, false);
+    await a.close().catch(() => {});
+    await a2.close().catch(() => {});
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('named sessions get the default rollLogCap; an explicit cap wins', () => {
+  const sessions = createSessions();
+  const meta = (id) => sessions.list().find((s) => s.id === id);
+  sessions.create({ id: 'capped-by-default', seed: 1 });
+  assert.equal(meta('capped-by-default').rollLogCap, 20_000);
+  sessions.create({ id: 'explicit', seed: 1, rollLogCap: 500 });
+  assert.equal(meta('explicit').rollLogCap, 500);
 });

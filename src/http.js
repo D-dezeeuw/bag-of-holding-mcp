@@ -68,13 +68,33 @@ export function createHttpHandler(opts = {}) {
   // `dice_roll` in the next. Bounded by the token allowlist.
   const tenantSessions = new Map();
   function sessionsFor(token) {
-    let registry = tenantSessions.get(token);
-    if (!registry) {
-      registry = createSessions();
-      tenantSessions.set(token, registry);
+    let entry = tenantSessions.get(token);
+    if (!entry) {
+      entry = { registry: createSessions(), lastUsed: Date.now() };
+      tenantSessions.set(token, entry);
     }
-    return registry;
+    entry.lastUsed = Date.now();
+    return entry.registry;
   }
+
+  // Idle eviction: a tenant registry (engines + rollLogs) that nobody
+  // has touched for a day is a table that went home — free it. The
+  // capacity audit found "nothing ever expires" made every memory
+  // ceiling monotonic with uptime. A campaign loses nothing real:
+  // durable state lives in the store; the next request just mints a
+  // fresh registry (hosts already re-run engine_create_session per
+  // sitting per the quickstart guide). Timer is unref'd so it never
+  // holds the process open; TTL 0 disables the sweep.
+  const sessionTtlMs = Math.max(0, Number(opts.sessionTtlHours ?? process.env.BOH_SESSION_TTL_HOURS ?? 24)) * 3_600_000;
+  const sweep = (now = Date.now()) => {
+    if (sessionTtlMs <= 0) return;
+    const cutoff = now - sessionTtlMs;
+    for (const [token, entry] of tenantSessions) {
+      if (entry.lastUsed < cutoff) tenantSessions.delete(token);
+    }
+  };
+  const sweepTimer = sessionTtlMs > 0 ? setInterval(sweep, Math.min(sessionTtlMs, 3_600_000)) : null;
+  if (sweepTimer?.unref) sweepTimer.unref();
 
   /**
    * Extract the token from `/mcp/<token>`. Returns null for any
@@ -128,6 +148,8 @@ export function createHttpHandler(opts = {}) {
 
   return {
     store,
+    /** Run one idle-eviction pass now (tests; ops tooling). */
+    sweepSessions: sweep,
     /** Node request listener; errors become a 500 rather than a hang. */
     handler: (req, res) => handler(req, res).catch((err) => {
       if (!res.headersSent) {

@@ -74,7 +74,8 @@ export function createEmbeddingsClient(opts) {
     model = DEFAULT_EMBEDDINGS_MODEL,
     dim = DEFAULT_EMBEDDINGS_DIM,
     apiKey,
-    fetchImpl = fetch
+    fetchImpl = fetch,
+    timeoutMs = 15_000
   } = opts;
   if (typeof url !== 'string' || url === '') {
     throw new Error('Embeddings client needs a url (e.g. http://localhost:8080/v1).');
@@ -84,10 +85,15 @@ export function createEmbeddingsClient(opts) {
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
   async function requestBatch(inputs) {
+    // Deadline: a hung TEI container used to hang the MCP request (and
+    // its ~1 MB of per-request server objects) indefinitely — the
+    // memory-search degrade-to-lexical path only fires on a THROWN
+    // error, so the timeout is what arms it.
     const response = await fetchImpl(endpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ model, input: inputs })
+      body: JSON.stringify({ model, input: inputs }),
+      signal: AbortSignal.timeout(timeoutMs)
     });
     if (!response.ok) {
       const body = (await response.text()).slice(0, 300);
@@ -105,11 +111,25 @@ export function createEmbeddingsClient(opts) {
 
   async function embedBatch(texts, cap) {
     const inputs = texts.map((t) => String(t).slice(0, cap));
-    const out = [];
+    // Batches used to run strictly serially: a first search on a
+    // 1,200-record backlog was 150 sequential round trips inside one
+    // tool call. Run up to 4 batches in flight — enough to pipeline
+    // the sidecar without stampeding it — and reassemble in order.
+    const batches = [];
     for (let i = 0; i < inputs.length; i += MAX_BATCH) {
-      out.push(...await requestBatch(inputs.slice(i, i + MAX_BATCH)));
+      batches.push(inputs.slice(i, i + MAX_BATCH));
     }
-    return out;
+    const results = new Array(batches.length);
+    const inFlight = 4;
+    let next = 0;
+    const worker = async () => {
+      while (next < batches.length) {
+        const mine = next++;
+        results[mine] = await requestBatch(batches[mine]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(inFlight, batches.length) }, worker));
+    return results.flat();
   }
 
   return {
