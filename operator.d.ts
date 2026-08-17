@@ -90,3 +90,43 @@ export interface OperatorStore {
  * Resolution: `opts.dataDir` → `$BOH_DATA_DIR` → `~/.bag-of-holding`.
  */
 export function createOperatorStore(opts?: { dataDir?: string }): OperatorStore;
+
+/** What `deleteCampaign` destroyed, captured before the delete. */
+export interface PurgedCampaign {
+  ns: string;
+  campaign: string;
+  records: number;
+  stateKeys: number;
+  ledgerEntries: number;
+  bytes: number;
+}
+
+/** What `deleteNamespace` destroyed, captured before the delete. */
+export interface PurgedNamespace {
+  ns: string;
+  campaigns: string[];
+  records: number;
+  bytes: number;
+}
+
+/**
+ * The destructive half of the operator surface — a SEPARATE factory, so
+ * `OperatorStore` above stays literally write-free and an import of this
+ * reads as an admission rather than an accident.
+ *
+ * Neither method checks whether the target *should* be deleted: that is
+ * policy, and policy belongs to the layer that knows what a tenant is.
+ * Neither stops the serving process from writing, either — closing that race
+ * is the caller's job (the admin panel requires a tenant be revoked first,
+ * which shuts the door before anything is removed).
+ *
+ * Both throw when the target does not exist, and both refuse any name that
+ * would resolve outside the data directory.
+ */
+export interface OperatorPurge {
+  dataDir: string;
+  deleteCampaign(ns: string, campaign: string): PurgedCampaign;
+  deleteNamespace(ns: string): PurgedNamespace;
+}
+
+export function createOperatorPurge(opts?: { dataDir?: string }): OperatorPurge;
