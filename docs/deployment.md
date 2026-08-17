@@ -142,8 +142,15 @@ Rules worth knowing before you hand-edit it:
   a value from a newer build all mean suspended — the expensive mistake is a
   revoked tenant that keeps playing, not an active one you re-enable. Every
   such case is logged, so a file that silently disables a table says why.
-- `tier` is passed through to the image gate, which is where tier names are
-  validated. An unknown one falls back to the server default.
+- `tier` names the tenant's scene-image allowance (`free`, `patron`,
+  `studio` — renders per hour and the cooldown between them). It beats the
+  deployment-wide `BOH_IMAGE_TIER`, which stays the default for tenants the
+  registry says nothing about, including every env-allowlist token. A name
+  this build does not know is never an upgrade: it falls back rather than
+  handing out an allowance nobody priced. A downgrade is clamped through the
+  budget already on disk, so it takes effect on the tenant's next call rather
+  than at the next window. Tiering is the server's call throughout — no tool
+  takes a `tier` parameter, so the model cannot ask for a bigger budget.
 - `ns` is reserved for token rotation and nothing reads it yet.
 - Unknown keys are ignored, so a newer panel writing extra fields will not
   break an older server.

@@ -99,9 +99,19 @@ export function imageTools(store, pinnedToken, deps = {}) {
   const renderer = config ? 'server' : 'host';
   const model = config?.model ?? null;
 
-  /** Load + heal the campaign's gate, with the tier the server says applies. */
+  /**
+   * Load + heal the campaign's gate, with the tier the server says applies.
+   *
+   * The tier comes from the allowlist entry, not from the caller: a tenant
+   * cannot ask for a bigger budget, and the model has no `tier` parameter to
+   * fill in. `normalizeImageGate` then clamps a persisted budget down to the
+   * tier ceiling, so a downgrade takes effect on the next call rather than
+   * leaving yesterday's allowance on disk.
+   */
   const gateOf = (token, campaign) =>
-    normalizeImageGate(store.imageGateLoad(token, campaign) ?? emptyImageGate(), { tier: tierFor(token, env) });
+    normalizeImageGate(store.imageGateLoad(token, campaign) ?? emptyImageGate(), {
+      tier: tierFor(store.tenantMeta(token), env),
+    });
 
   return [
     {

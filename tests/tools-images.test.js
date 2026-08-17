@@ -16,10 +16,15 @@ import { parse } from './_helpers.js';
 const tmpDirs = [];
 const PIXEL = 'iVBORw0KGgoAAAANSUhEUg==';
 
-function harness({ env = {}, tokenHashes = [], render, pinned } = {}) {
+function harness({ env = {}, tokenHashes = [], render, pinned, registry } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-imgtools-'));
   tmpDirs.push(dir);
-  const store = createMemoryStore({ dataDir: dir, tokenHashes });
+  let registryFile;
+  if (registry) {
+    registryFile = path.join(dir, 'tenants.json');
+    fs.writeFileSync(registryFile, JSON.stringify({ version: 1, tenants: registry }), 'utf8');
+  }
+  const store = createMemoryStore({ dataDir: dir, tokenHashes, registryFile });
   let clock = 1_700_000_000_000;
   const calls = [];
   const tools = imageTools(store, pinned, {
@@ -334,4 +339,61 @@ test('the server tier is the server\'s to set, and no tool takes one', async () 
 
   const nonsense = harness({ env: { ...SERVER_ENV, BOH_IMAGE_TIER: 'legendary' } });
   assert.equal((await nonsense.run('image_status', { campaign: 'fen' })).data.tier, 'free');
+});
+
+test('a tenant plays on the tier its registry entry names', async () => {
+  // The point of the whole tenancy slice: two tokens on one deployment, two
+  // different allowances, neither of them chosen by the model.
+  const { createHash } = await import('node:crypto');
+  const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
+  const h = harness({
+    env: SERVER_ENV,
+    registry: {
+      [sha256('paid')]: { tier: 'studio', status: 'active' },
+      [sha256('plain')]: { status: 'active' },
+    },
+  });
+
+  const paid = await h.run('image_enable', { campaign: 'fen', token: 'paid' });
+  assert.equal(paid.data.tier, 'studio');
+  assert.equal(paid.data.budget, IMAGE_TIERS.studio.budget);
+
+  // Same server, same env, different tenant: no registry tier, so the
+  // deployment default applies.
+  const plain = await h.run('image_enable', { campaign: 'fen', token: 'plain' });
+  assert.equal(plain.data.tier, SERVER_ENV.BOH_IMAGE_TIER ?? 'free');
+  assert.notEqual(plain.data.budget, IMAGE_TIERS.studio.budget);
+});
+
+test('a downgrade clamps a budget already written to disk', async () => {
+  // The gate is persisted per campaign, so a tier change has to reach through
+  // stored state rather than only applying to fresh gates.
+  const { createHash } = await import('node:crypto');
+  const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-imgtools-'));
+  tmpDirs.push(dir);
+  const registryFile = path.join(dir, 'tenants.json');
+  const write = (tier) => fs.writeFileSync(registryFile, JSON.stringify({
+    version: 1, tenants: { [sha256('tok')]: { tier, status: 'active' } },
+  }), 'utf8');
+  write('studio');
+
+  let clock = 1_700_000_000_000;
+  const store = createMemoryStore({
+    dataDir: dir, tokenHashes: [], registryFile,
+    registryTtlMs: 10, now: () => clock, warn: () => {},
+  });
+  const mk = () => new Map(imageTools(store, undefined, {
+    env: {}, now: () => clock, render: async () => ({ ok: false, reason: 'no' }),
+  }).map((t) => [t.name, t]));
+
+  const big = parse(await mk().get('image_enable').handler({ campaign: 'fen', token: 'tok' }));
+  assert.equal(big.data.budget, IMAGE_TIERS.studio.budget);
+
+  write('free');
+  clock += 50;
+  const small = parse(await mk().get('image_status').handler({ campaign: 'fen', token: 'tok' }));
+  assert.equal(small.data.tier, 'free');
+  assert.equal(small.data.budget, IMAGE_TIERS.free.budget,
+    'the persisted studio budget must not survive the downgrade');
 });

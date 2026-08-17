@@ -323,7 +323,10 @@ export function resolveImageConfig(env?: Record<string, string | undefined>): Im
  * Which image tier a caller plays on. Server-resolved (BOH_IMAGE_TIER today,
  * a per-token lookup once tokens name a paid tier) — never model-supplied.
  */
-export function tierFor(token: string | undefined, env?: Record<string, string | undefined>): string;
+export function tierFor(
+  meta: Pick<TenantMeta, 'tier'> | null | undefined,
+  env?: Record<string, string | undefined>
+): string;
 
 /**
  * Split a `data:<mime>;base64,<body>` URI into the parts an MCP image content
