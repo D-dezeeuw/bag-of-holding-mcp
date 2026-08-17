@@ -27,6 +27,7 @@
 // deployment's config, and no tool takes a `tier` parameter. That is the seam
 // where "tokens that have paid for tier X" will land.
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   emptyImageGate, normalizeImageGate, imageGateStatus,
@@ -92,7 +93,15 @@ const REASON_HINTS = Object.freeze({
  * @param deps         `{ env, now, render }` — injection seams for tests
  */
 export function imageTools(store, pinnedToken, deps = {}) {
-  const { env = process.env, now = () => Date.now(), render = renderImage } = deps;
+  const {
+    env = process.env, now = () => Date.now(), render = renderImage,
+    // Grant ids default to a counter in the client library, which keeps that
+    // module deterministic and is fine for a browser host minting its own.
+    // A server minting grants for many tenants needs them unguessable: a
+    // predictable id is a forgeable one, and this server hands grants to
+    // whoever holds the token. Injectable so tests can pin it.
+    mintId = () => `g-${randomUUID()}`,
+  } = deps;
   const { tokenField, tokenOf } = tenantFields(pinnedToken);
 
   const config = resolveImageConfig(env);
@@ -176,7 +185,7 @@ export function imageTools(store, pinnedToken, deps = {}) {
           // Compose before spending: an unusable prompt should cost nothing.
           const prompt = composeImagePrompt({ scene, subject, tone, style });
 
-          const spend = spendImageRender(gate, at, { prompt });
+          const spend = spendImageRender(gate, at, { prompt, mintId });
           if (!spend.ok) {
             return refusal(spend.reason, REASON_HINTS[spend.reason], statusPayload(gate, at, renderer, model));
           }

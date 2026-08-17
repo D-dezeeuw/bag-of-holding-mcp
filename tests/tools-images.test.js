@@ -397,3 +397,20 @@ test('a downgrade clamps a budget already written to disk', async () => {
   assert.equal(small.data.budget, IMAGE_TIERS.free.budget,
     'the persisted studio budget must not survive the downgrade');
 });
+
+test('grant ids are unguessable, because this server mints them for many tenants', async () => {
+  // The client library's default id is `g-<renders>-<now>`, which is
+  // deterministic on purpose and forgeable the moment more than one tenant is
+  // involved: renders and clock are both guessable from the outside.
+  const h = harness({ env: {} });   // keyless server, so observe returns a grant
+  await h.run('image_enable', { campaign: 'fen' });
+  const first = await h.run('image_observe', { campaign: 'fen', scene: SCENE });
+  h.advance(IMAGE_TIERS.free.cooldownMs);
+  const second = await h.run('image_observe', { campaign: 'fen', scene: SCENE });
+
+  for (const grant of [first.data.grant, second.data.grant]) {
+    assert.match(grant.id, /^g-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  }
+  assert.notEqual(first.data.grant.id, second.data.grant.id);
+  assert.ok(!first.data.grant.id.includes(String(h.at())), 'the clock must not be recoverable from the id');
+});
