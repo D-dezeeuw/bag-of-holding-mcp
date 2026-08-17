@@ -122,3 +122,27 @@ test('the registry volume is declared, not assumed to exist', () => {
   assert.match(compose, /^volumes:/m);
   assert.match(compose.slice(compose.lastIndexOf('\nvolumes:')), /^\s{2}boh-registry:/m);
 });
+
+test('every mounted volume path exists in the image, owned by the runtime user', () => {
+  // Docker seeds an empty named volume's ownership from the image path under
+  // the mount point, and creates it ROOT-owned when the image has no such
+  // path — permanently, decided by whichever container mounts it first.
+  //
+  // This container mounts the registry read-only, so getting it wrong is
+  // invisible here and surfaces in the admin panel as EACCES on the first
+  // token mint. That is not a hypothetical: it is how this was found.
+  const mounts = [...compose.matchAll(/^\s*-\s*[\w-]+:(\/[\w/-]+)(?::ro)?\s*$/gm)]
+    .map((m) => m[1])
+    .filter((p) => p !== '/qdrant/storage' && p !== '/data/db');   // sidecar images own theirs
+  assert.ok(mounts.length >= 2, 'expected at least the data and registry mounts');
+
+  const mkdir = dockerfile.match(/^RUN mkdir -p ([^&]+)&& chown boh:boh (.+)$/m);
+  assert.ok(mkdir, 'the Dockerfile must create its volume mount points');
+  const created = mkdir[1].trim().split(/\s+/);
+  const owned = mkdir[2].trim().split(/\s+/);
+
+  for (const mount of mounts) {
+    assert.ok(created.includes(mount), `${mount} is mounted but never created in the image`);
+    assert.ok(owned.includes(mount), `${mount} is created but not chowned to boh`);
+  }
+});
