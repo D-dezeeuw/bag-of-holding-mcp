@@ -35,6 +35,11 @@ import {
   createQdrantClient, pointId, DEFAULT_QDRANT_URL, DEFAULT_QDRANT_COLLECTION
 } from './qdrant.js';
 import { createTenantRegistry } from './registry.js';
+import {
+  campaignDirOf, memoryFileOf, stateDirOf, imageGateFileOf,
+  worldPinFileOf, worldLedgerFileOf, worldObservedFileOf,
+  parseJsonl, liveRecords,
+} from './layout.js';
 
 /**
  * Record types the memory log accepts. An enum (rather than
@@ -221,15 +226,17 @@ export function createMemoryStore(opts = {}) {
     return typeof token === 'string' && token !== '' ? `t-${sha256(token).slice(0, 16)}` : 'local';
   }
 
-  const campaignDir = (ns, campaign) => path.join(dataDir, ns, campaign);
-  const memoryFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'memory.jsonl');
-  const stateDir = (ns, campaign) => path.join(campaignDir(ns, campaign), 'state');
-  // Outside `state/` on purpose — see `imageGateLoad` below.
-  const imageGateFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'image-gate.json');
-  // The world playthrough trio, also outside `state/` (see the world methods).
-  const worldPinFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world.json');
-  const worldLedgerFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world-ledger.jsonl');
-  const worldObservedFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world-observed.json');
+  // Layout lives in ./layout.js so the read-only operator module cannot
+  // drift from it; these bind `dataDir` so the rest of this file is unchanged.
+  // The image gate and the world trio sit outside `state/` on purpose — see
+  // `imageGateLoad` and the world methods below.
+  const campaignDir = (ns, campaign) => campaignDirOf(dataDir, ns, campaign);
+  const memoryFile = (ns, campaign) => memoryFileOf(dataDir, ns, campaign);
+  const stateDir = (ns, campaign) => stateDirOf(dataDir, ns, campaign);
+  const imageGateFile = (ns, campaign) => imageGateFileOf(dataDir, ns, campaign);
+  const worldPinFile = (ns, campaign) => worldPinFileOf(dataDir, ns, campaign);
+  const worldLedgerFile = (ns, campaign) => worldLedgerFileOf(dataDir, ns, campaign);
+  const worldObservedFile = (ns, campaign) => worldObservedFileOf(dataDir, ns, campaign);
 
   // Closure readers (not methods) so the public methods never rely on `this`
   // — a destructured store method must keep working.
@@ -261,36 +268,8 @@ export function createMemoryStore(opts = {}) {
   function loadOps(ns, campaign) {
     const file = memoryFile(ns, campaign);
     if (!fs.existsSync(file)) return { ops: [], corrupt: 0 };
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
-    const ops = [];
-    let corrupt = 0;
-    for (const line of lines) {
-      try {
-        ops.push(JSON.parse(line));
-      } catch {
-        corrupt += 1;
-      }
-    }
-    return { ops, corrupt };
-  }
-
-  /**
-   * Fold the op log into the live record set (insertion-ordered,
-   * oldest first). `forget` ops tombstone earlier `record` ops;
-   * unknown ops are ignored so an older server can read a log a
-   * newer one wrote.
-   */
-  function liveRecords(ops) {
-    const live = new Map();
-    for (const entry of ops) {
-      if (entry.op === 'record') {
-        const { op, ...rec } = entry;
-        live.set(rec.id, rec);
-      } else if (entry.op === 'forget') {
-        live.delete(entry.id);
-      }
-    }
-    return [...live.values()];
+    const { entries, corrupt } = parseJsonl(fs.readFileSync(file, 'utf8'));
+    return { ops: entries, corrupt };
   }
 
   function appendOp(ns, campaign, entry) {
