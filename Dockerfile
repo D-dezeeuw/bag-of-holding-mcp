@@ -40,8 +40,9 @@ RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.co
 # Two separate traps, and the second one is silent:
 #
 #   1. npm 7+ installs unsatisfied peers from the REGISTRY, and both ranges
-#      deliberately point ahead of what is published (engine peer ^2.5.0 vs
-#      2.1.0 on npm; client peer ^0.8.0 vs 0.4.0). Left in place they fail the
+#      deliberately point ahead of what is published (engine peer
+#      >=2.5.0 <4.0.0 vs 2.1.0 on npm; client peer >=0.29.0 <1.0.0, not
+#      yet on npm at that version). Left in place they fail the
 #      build with ETARGET while the correct code sits in the dependency map.
 #   2. `npm pkg set dependencies.X=<git spec>` does NOT stick while X is still
 #      listed as a peer: a later `npm pkg` call re-reads the file, normalises

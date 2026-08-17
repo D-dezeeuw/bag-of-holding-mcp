@@ -37,8 +37,8 @@ jobs:
       # itself against the peer range and fails before it starts, because the
       # range names a version npm has not seen yet. Rewriting the dev
       # dependency lets one resolution satisfy both — the github tarball's own
-      # package.json reports the engine's current version, which the caret
-      # peer range accepts as long as the major matches.
+      # package.json reports the engine's current version, which the
+      # declared peer range (>=2.5.0 <4.0.0) accepts.
       #
       # Which ref of a sibling: the branch under test if that repo has one by
       # the same name, otherwise main. The three repos move together, so a
