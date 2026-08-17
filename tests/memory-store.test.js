@@ -258,3 +258,138 @@ test('campaigns lists directories only and counts records and state keys', () =>
   assert.equal(info.authRequired, false);
   assert.equal(info.campaigns.length, 2);
 });
+
+// ---- tenant registry integration -------------------------------------------
+//
+// The registry file's own parsing and reload semantics live in
+// memory-registry.test.js. What matters here is how the store unions it with
+// the env allowlist, and what `tenantMeta` reports.
+
+/** Write a registry doc into a fresh dir and return `{ file, dir }`. */
+function mkRegistryFile(tenants) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-store-reg-'));
+  tmpDirs.push(dir);
+  const file = path.join(dir, 'tenants.json');
+  fs.writeFileSync(file, JSON.stringify({ version: 1, tenants }), 'utf8');
+  return { file, dir };
+}
+
+test('a configured registry turns auth on even with no env hashes', () => {
+  const { file } = mkRegistryFile({});
+  const { store } = mkStore({ registryFile: file });
+  assert.equal(store.authRequired, true);
+  // Configured-but-empty means nobody is allowed, not everybody.
+  assert.equal(store.isAuthorized('anything'), false);
+  assert.equal(store.isAuthorized(undefined), false);
+});
+
+test('registry tenants are authorised, suspended ones are not', () => {
+  const { file } = mkRegistryFile({
+    [sha256('live')]: { tier: 'patron', status: 'active' },
+    [sha256('paused')]: { tier: 'patron', status: 'suspended' },
+  });
+  const { store } = mkStore({ registryFile: file });
+  assert.equal(store.isAuthorized('live'), true);
+  assert.equal(store.isAuthorized('paused'), false);
+  assert.equal(store.isAuthorized('unknown'), false);
+});
+
+test('the env allowlist and the registry are a union, not an override', () => {
+  const { file } = mkRegistryFile({ [sha256('from-file')]: { status: 'active' } });
+  const { store } = mkStore({ registryFile: file, tokenHashes: [sha256('from-env')] });
+  assert.equal(store.isAuthorized('from-env'), true);
+  assert.equal(store.isAuthorized('from-file'), true);
+});
+
+test('an env token stays authorised even when the registry suspends it — break-glass', () => {
+  // Whatever the panel says, the operator with shell access wins. This is
+  // what makes the env var a recovery path rather than one more thing to
+  // get wrong.
+  const { file } = mkRegistryFile({ [sha256('both')]: { status: 'suspended' } });
+  const { store } = mkStore({ registryFile: file, tokenHashes: [sha256('both')] });
+  assert.equal(store.isAuthorized('both'), true);
+  assert.equal(store.tenantMeta('both').status, 'suspended', 'the registry entry is still reported');
+});
+
+test('tenantMeta reports tier, status and provenance', () => {
+  const { file } = mkRegistryFile({ [sha256('paid')]: { tier: 'studio', status: 'active', ns: 't-old' } });
+  const { store } = mkStore({ registryFile: file, tokenHashes: [sha256('plain')] });
+  assert.deepEqual(store.tenantMeta('paid'), {
+    tier: 'studio', status: 'active', ns: 't-old', source: 'registry',
+  });
+  // The env allowlist carries no per-tenant data, so tier is null and the
+  // caller falls back to its own default rather than this layer inventing one.
+  assert.deepEqual(store.tenantMeta('plain'), {
+    tier: null, status: 'active', ns: null, source: 'env',
+  });
+  assert.equal(store.tenantMeta('stranger'), null);
+});
+
+test('tenantMeta is null for a missing or empty token', () => {
+  const { file } = mkRegistryFile({ [sha256('x')]: { status: 'active' } });
+  const { store } = mkStore({ registryFile: file });
+  assert.equal(store.tenantMeta(undefined), null);
+  assert.equal(store.tenantMeta(''), null);
+});
+
+test('an empty token never authorises in closed mode', () => {
+  const { store } = mkStore({ tokenHashes: [sha256('real')] });
+  assert.equal(store.isAuthorized(''), false);
+  assert.equal(store.isAuthorized(undefined), false);
+});
+
+test('open mode still authorises everything, including no token at all', () => {
+  const { store } = mkStore();
+  assert.equal(store.authRequired, false);
+  assert.equal(store.isAuthorized(undefined), true);
+  assert.equal(store.isAuthorized(''), true);
+  assert.equal(store.tenantMeta('anything'), null);
+});
+
+test('a suspension takes effect without a restart', () => {
+  const { file, dir } = mkRegistryFile({ [sha256('live')]: { status: 'active' } });
+  let clock = 0;
+  const store = createMemoryStore({
+    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'boh-store-')),
+    tokenHashes: [], registryFile: file, registryTtlMs: 10, now: () => clock, warn: () => {},
+  });
+  assert.equal(store.isAuthorized('live'), true);
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1, tenants: { [sha256('live')]: { status: 'suspended' } },
+  }), 'utf8');
+  clock += 50;
+  assert.equal(store.isAuthorized('live'), false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a corrupt registry refuses to construct the store at all', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-store-reg-'));
+  tmpDirs.push(dir);
+  const file = path.join(dir, 'tenants.json');
+  fs.writeFileSync(file, 'not json at all', 'utf8');
+  assert.throws(
+    () => createMemoryStore({ dataDir: dir, tokenHashes: [], registryFile: file }),
+    /Tenant registry is not valid JSON/
+  );
+});
+
+test('an absent registry file is not an error — the panel may write it later', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-store-reg-'));
+  tmpDirs.push(dir);
+  const store = createMemoryStore({
+    dataDir: dir, tokenHashes: [sha256('env')], registryFile: path.join(dir, 'not-yet.json'),
+  });
+  assert.equal(store.authRequired, true);
+  assert.equal(store.isAuthorized('env'), true);
+});
+
+test('registry tenants get their own namespaces, same as env tenants', () => {
+  const { file } = mkRegistryFile({ [sha256('alice')]: { status: 'active' } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-store-'));
+  tmpDirs.push(dir);
+  const store = createMemoryStore({ dataDir: dir, tokenHashes: [], registryFile: file });
+  store.record('alice', 'fen', { type: 'note', text: 'hello' });
+  const ns = store.info('alice').namespace;
+  assert.match(ns, /^t-[0-9a-f]{16}$/);
+  assert.deepEqual(fs.readdirSync(dir), [ns]);
+});

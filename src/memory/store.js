@@ -34,6 +34,12 @@ import {
 import {
   createQdrantClient, pointId, DEFAULT_QDRANT_URL, DEFAULT_QDRANT_COLLECTION
 } from './qdrant.js';
+import { createTenantRegistry } from './registry.js';
+import {
+  campaignDirOf, memoryFileOf, stateDirOf, imageGateFileOf,
+  worldPinFileOf, worldLedgerFileOf, worldObservedFileOf,
+  parseJsonl, liveRecords,
+} from './layout.js';
 
 /**
  * Record types the memory log accepts. An enum (rather than
@@ -143,7 +149,20 @@ export function createMemoryStore(opts = {}) {
     (opts.tokenHashes ?? parseEnvHashes(process.env.BOH_MEMORY_TOKEN_HASHES))
       .map((h) => h.toLowerCase())
   );
-  const authRequired = tokenHashes.size > 0;
+  // The second allowlist source: a file the admin panel writes, re-read on
+  // change so provisioning and revocation no longer need a redeploy. See
+  // ./registry.js for the schema and the failure posture. `start()` throws
+  // on a corrupt file, which main() turns into a fail-closed exit 2.
+  const registry = createTenantRegistry({
+    file: opts.registryFile ?? process.env.BOH_TENANT_REGISTRY ?? null,
+    ttlMs: opts.registryTtlMs,
+    now: opts.now,
+    warn: opts.warn,
+  });
+  registry.start();
+  // Either source turns auth on. A configured-but-empty registry still
+  // counts: "no tenants yet" must mean nobody gets in, not everybody.
+  const authRequired = tokenHashes.size > 0 || registry.configured;
 
   // Semantic layer — lazily initialised on the first hybrid search
   // so a configured-but-down sidecar can never block startup, and
@@ -170,7 +189,32 @@ export function createMemoryStore(opts = {}) {
    * one at a time.
    */
   function isAuthorized(token) {
-    return !authRequired || (typeof token === 'string' && tokenHashes.has(sha256(token)));
+    if (!authRequired) return true;
+    if (typeof token !== 'string' || token === '') return false;
+    const hash = sha256(token);
+    // Env first: it is the break-glass path, so it must keep working even
+    // when the registry is empty, stale, or says otherwise.
+    if (tokenHashes.has(hash)) return true;
+    const entry = registry.get(hash);
+    return entry !== null && entry.status === 'active';
+  }
+
+  /**
+   * What the allowlist knows about this token beyond yes/no: which tier it
+   * plays on, whether it is suspended, and which source vouched for it.
+   * Null for a token no source knows.
+   *
+   * `tier` is null for an env tenant — the env allowlist carries no
+   * per-tenant data, so callers fall back to their own server-wide default
+   * rather than this module inventing one.
+   */
+  function tenantMeta(token) {
+    if (typeof token !== 'string' || token === '') return null;
+    const hash = sha256(token);
+    const entry = registry.get(hash);
+    if (entry !== null) return { ...entry, source: 'registry' };
+    if (tokenHashes.has(hash)) return { tier: null, status: 'active', ns: null, source: 'env' };
+    return null;
   }
 
   function namespaceFor(token) {
@@ -182,15 +226,17 @@ export function createMemoryStore(opts = {}) {
     return typeof token === 'string' && token !== '' ? `t-${sha256(token).slice(0, 16)}` : 'local';
   }
 
-  const campaignDir = (ns, campaign) => path.join(dataDir, ns, campaign);
-  const memoryFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'memory.jsonl');
-  const stateDir = (ns, campaign) => path.join(campaignDir(ns, campaign), 'state');
-  // Outside `state/` on purpose — see `imageGateLoad` below.
-  const imageGateFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'image-gate.json');
-  // The world playthrough trio, also outside `state/` (see the world methods).
-  const worldPinFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world.json');
-  const worldLedgerFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world-ledger.jsonl');
-  const worldObservedFile = (ns, campaign) => path.join(campaignDir(ns, campaign), 'world-observed.json');
+  // Layout lives in ./layout.js so the read-only operator module cannot
+  // drift from it; these bind `dataDir` so the rest of this file is unchanged.
+  // The image gate and the world trio sit outside `state/` on purpose — see
+  // `imageGateLoad` and the world methods below.
+  const campaignDir = (ns, campaign) => campaignDirOf(dataDir, ns, campaign);
+  const memoryFile = (ns, campaign) => memoryFileOf(dataDir, ns, campaign);
+  const stateDir = (ns, campaign) => stateDirOf(dataDir, ns, campaign);
+  const imageGateFile = (ns, campaign) => imageGateFileOf(dataDir, ns, campaign);
+  const worldPinFile = (ns, campaign) => worldPinFileOf(dataDir, ns, campaign);
+  const worldLedgerFile = (ns, campaign) => worldLedgerFileOf(dataDir, ns, campaign);
+  const worldObservedFile = (ns, campaign) => worldObservedFileOf(dataDir, ns, campaign);
 
   // Closure readers (not methods) so the public methods never rely on `this`
   // — a destructured store method must keep working.
@@ -222,36 +268,8 @@ export function createMemoryStore(opts = {}) {
   function loadOps(ns, campaign) {
     const file = memoryFile(ns, campaign);
     if (!fs.existsSync(file)) return { ops: [], corrupt: 0 };
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
-    const ops = [];
-    let corrupt = 0;
-    for (const line of lines) {
-      try {
-        ops.push(JSON.parse(line));
-      } catch {
-        corrupt += 1;
-      }
-    }
-    return { ops, corrupt };
-  }
-
-  /**
-   * Fold the op log into the live record set (insertion-ordered,
-   * oldest first). `forget` ops tombstone earlier `record` ops;
-   * unknown ops are ignored so an older server can read a log a
-   * newer one wrote.
-   */
-  function liveRecords(ops) {
-    const live = new Map();
-    for (const entry of ops) {
-      if (entry.op === 'record') {
-        const { op, ...rec } = entry;
-        live.set(rec.id, rec);
-      } else if (entry.op === 'forget') {
-        live.delete(entry.id);
-      }
-    }
-    return [...live.values()];
+    const { entries, corrupt } = parseJsonl(fs.readFileSync(file, 'utf8'));
+    return { ops: entries, corrupt };
   }
 
   function appendOp(ns, campaign, entry) {
@@ -318,6 +336,7 @@ export function createMemoryStore(opts = {}) {
     dataDir,
     authRequired,
     isAuthorized,
+    tenantMeta,
 
     /** Append one memory record; returns it with its assigned id. */
     record(token, campaign, input) {

@@ -23,10 +23,23 @@ test('a configured server falls back to the OpenRouter defaults', () => {
 
 test('the tier is read from the deployment, never from the caller', () => {
   assert.equal(tierFor(undefined, {}), 'free');
-  assert.equal(tierFor('a-token', {}), 'free');
-  assert.equal(tierFor('a-token', { BOH_IMAGE_TIER: 'patron' }), 'patron');
-  assert.equal(tierFor('a-token', { BOH_IMAGE_TIER: 'legendary' }), 'free', 'an unknown tier is not an upgrade');
-  assert.equal(tierFor('a-token', { BOH_IMAGE_TIER: 'toString' }), 'free', 'nor is a prototype key');
+  assert.equal(tierFor(null, {}), 'free');
+  assert.equal(tierFor(null, { BOH_IMAGE_TIER: 'patron' }), 'patron');
+  assert.equal(tierFor(null, { BOH_IMAGE_TIER: 'legendary' }), 'free', 'an unknown tier is not an upgrade');
+  assert.equal(tierFor(null, { BOH_IMAGE_TIER: 'toString' }), 'free', 'nor is a prototype key');
+});
+
+test('a tenant tier beats the server default, and a bad one does not', () => {
+  // The registry names the tier; BOH_IMAGE_TIER is the fallback for tenants
+  // it says nothing about.
+  assert.equal(tierFor({ tier: 'studio' }, {}), 'studio');
+  assert.equal(tierFor({ tier: 'studio' }, { BOH_IMAGE_TIER: 'free' }), 'studio');
+  assert.equal(tierFor({ tier: null }, { BOH_IMAGE_TIER: 'patron' }), 'patron',
+    'an env-allowlist tenant carries no tier and falls back');
+  assert.equal(tierFor({ tier: 'legendary' }, { BOH_IMAGE_TIER: 'patron' }), 'patron',
+    'an unknown tenant tier falls back rather than inventing an allowance');
+  assert.equal(tierFor({ tier: 'toString' }, {}), 'free');
+  assert.equal(tierFor({ tier: 7 }, {}), 'free', 'a non-string tier is not a tier');
 });
 
 test('splitDataUri takes data-URIs and rejects everything else', () => {

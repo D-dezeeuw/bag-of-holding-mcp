@@ -253,6 +253,43 @@ http.createServer(handler).listen(8091);
 
 `sessions` is the in-memory session registry; programmatic code can call `sessions.create`, `sessions.rollLog`, etc. without going through MCP tool dispatch.
 
+### The operator surface
+
+Every store method takes a token and derives the namespace from it, so no
+tool can enumerate tenants or read across them. That is deliberate — but an
+operator running the deployment does need a way to see what is on disk. The
+`/operator` subpath is that view:
+
+```js
+import { createOperatorStore } from '@zeeuw/bag-of-holding-mcp/operator';
+
+const op = createOperatorStore({ dataDir: '/data' });
+op.listNamespaces();              // [{ ns, campaigns, bytes, lastActivityAt }]
+op.namespaceOverview(ns);         // per-campaign counts, world, image gate, sizes
+op.exportCampaign(ns, campaign);  // same shape as the memory_export tool
+```
+
+Three things about it are contract rather than implementation detail:
+
+- **It is read-only.** There are no write methods, and adding one would
+  defeat the point — administration provisions tenants through the registry
+  file, and never reaches into campaign data.
+- **It is not a tool, and must not become one.** Nothing under `src/tools/`
+  imports it. `createServer` never sees it.
+- **Filesystem access is the credential.** There is no auth here because
+  there is no request here: whoever can open the data directory can already
+  read it. Do not mount this behind an HTTP handler and treat that handler's
+  auth as sufficient.
+
+Namespaces are `t-<sha256(token)[0:16]>` — one-way, so this reports what a
+tenant *has* and never who they are. Mapping a namespace to a person is the
+administration layer's job, from its own records.
+
+It imports `node:` builtins and one local path helper — no MCP SDK, no zod,
+no engine — so a dashboard can depend on it cheaply. Readers are tolerant of
+being run while the server is writing: a torn trailing line comes back as
+`truncatedTail: true` rather than an exception.
+
 ## Honest limits
 
 The server provides persistent narrative memory, mechanical checkpoints, worlds (hand-authored and generated), solo play with verifiable replays and play guides. It still does **not** give you:

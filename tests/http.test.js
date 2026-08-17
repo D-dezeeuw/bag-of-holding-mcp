@@ -391,6 +391,58 @@ test('a playthrough spans SEPARATE HTTP connections — begin, then commit, then
   } finally { await cb.close(); }
 });
 
+test('revoking a tenant mid-flight 404s it and frees its engine sessions', async () => {
+  // The registry is the hot path this exercises: a live tenant, a suspension
+  // written by some other process, and the door closing without a restart.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-http-revoke-'));
+  const registry = path.join(dir, 'tenants.json');
+  const write = (status) => fs.writeFileSync(registry, JSON.stringify({
+    version: 1, tenants: { [sha256(TOKEN_A)]: { status } },
+  }), 'utf8');
+  write('active');
+
+  let clock = 0;
+  const store = createMemoryStore({
+    dataDir: dir, tokenHashes: [], registryFile: registry,
+    registryTtlMs: 10, now: () => clock, warn: () => {},
+  });
+  const { handler } = createHttpHandler({ memoryStore: store });
+  const srv = http.createServer(handler);
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${srv.address().port}/mcp/${TOKEN_A}`;
+
+  try {
+    const live = new Client({ name: 'test-host', version: '0.0.0' });
+    await live.connect(new StreamableHTTPClientTransport(new URL(url)));
+    await live.callTool({ name: 'engine_create_session', arguments: { id: 'doomed', seed: 3 } });
+    await live.close();
+
+    write('suspended');
+    clock += 50;
+
+    const res = await fetch(url, { method: 'POST' });
+    assert.equal(res.status, 404, 'a suspended tenant is indistinguishable from an unknown one');
+    assert.deepEqual(await res.json(), { error: 'Not found' });
+
+    // Reinstated: the sessions are gone (the registry was evicted on the way
+    // out), but the tenant plays again — its campaign data was never touched.
+    write('active');
+    clock += 50;
+    const back = new Client({ name: 'test-host', version: '0.0.0' });
+    await back.connect(new StreamableHTTPClientTransport(new URL(url)));
+    try {
+      const listed = await back.callTool({ name: 'engine_list_sessions', arguments: {} });
+      const ids = listed.structuredContent.sessions.map((s) => s.id);
+      assert.ok(!ids.includes('doomed'),
+        'the revoked tenant\'s engine registry was dropped, not kept alive forever');
+      assert.deepEqual(ids, ['default'], 'and what is left is a freshly minted registry');
+    } finally { await back.close(); }
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('idle tenants are evicted; active ones survive; durable state is untouched', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-evict-'));
   const built = createHttpHandler({
@@ -429,6 +481,24 @@ test('idle tenants are evicted; active ones survive; durable state is untouched'
   }
 });
 
+test('a registry alone satisfies the fail-closed boot check', async () => {
+  // listen() refuses to serve with no allowlist at all. A registry file is an
+  // allowlist, so a deployment that provisions purely through the panel must
+  // still be allowed to boot.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-http-regboot-'));
+  const registry = path.join(dir, 'tenants.json');
+  fs.writeFileSync(registry, JSON.stringify({ version: 1, tenants: {} }), 'utf8');
+  try {
+    const srv = await listen({
+      port: 0, host: '127.0.0.1',
+      memory: { dataDir: dir, tokenHashes: [], registryFile: registry },
+    });
+    await new Promise((resolve) => srv.close(resolve));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('named sessions get the default rollLogCap; an explicit cap wins', () => {
   const sessions = createSessions();
   const meta = (id) => sessions.list().find((s) => s.id === id);
@@ -436,4 +506,25 @@ test('named sessions get the default rollLogCap; an explicit cap wins', () => {
   assert.equal(meta('capped-by-default').rollLogCap, 20_000);
   sessions.create({ id: 'explicit', seed: 1, rollLogCap: 500 });
   assert.equal(meta('explicit').rollLogCap, 500);
+});
+
+test('a zero TTL disables idle eviction entirely, and arms no timer', () => {
+  // `BOH_SESSION_TTL_HOURS=0` is the documented off switch. Worth pinning:
+  // the sweep and the timer are separate branches, and an off switch that
+  // silently still evicted (or still held a handle) would be worse than no
+  // switch at all.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-ttl-off-'));
+  try {
+    const built = createHttpHandler({
+      memory: { dataDir: dir, tokenHashes: [sha256(TOKEN_A)] },
+      sessionTtlHours: 0,
+    });
+    // A sweep dated far in the future must still evict nothing.
+    assert.doesNotThrow(() => built.sweepSessions(Date.now() + 10 * 24 * 3_600_000));
+    // And nothing holds the event loop open: with no timer armed, this
+    // handler is inert until a request arrives.
+    assert.equal(built.store.authRequired, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

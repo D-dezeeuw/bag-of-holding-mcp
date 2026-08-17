@@ -27,6 +27,7 @@
 // deployment's config, and no tool takes a `tier` parameter. That is the seam
 // where "tokens that have paid for tier X" will land.
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   emptyImageGate, normalizeImageGate, imageGateStatus,
@@ -92,16 +93,34 @@ const REASON_HINTS = Object.freeze({
  * @param deps         `{ env, now, render }` — injection seams for tests
  */
 export function imageTools(store, pinnedToken, deps = {}) {
-  const { env = process.env, now = () => Date.now(), render = renderImage } = deps;
+  const {
+    env = process.env, now = () => Date.now(), render = renderImage,
+    // Grant ids default to a counter in the client library, which keeps that
+    // module deterministic and is fine for a browser host minting its own.
+    // A server minting grants for many tenants needs them unguessable: a
+    // predictable id is a forgeable one, and this server hands grants to
+    // whoever holds the token. Injectable so tests can pin it.
+    mintId = () => `g-${randomUUID()}`,
+  } = deps;
   const { tokenField, tokenOf } = tenantFields(pinnedToken);
 
   const config = resolveImageConfig(env);
   const renderer = config ? 'server' : 'host';
   const model = config?.model ?? null;
 
-  /** Load + heal the campaign's gate, with the tier the server says applies. */
+  /**
+   * Load + heal the campaign's gate, with the tier the server says applies.
+   *
+   * The tier comes from the allowlist entry, not from the caller: a tenant
+   * cannot ask for a bigger budget, and the model has no `tier` parameter to
+   * fill in. `normalizeImageGate` then clamps a persisted budget down to the
+   * tier ceiling, so a downgrade takes effect on the next call rather than
+   * leaving yesterday's allowance on disk.
+   */
   const gateOf = (token, campaign) =>
-    normalizeImageGate(store.imageGateLoad(token, campaign) ?? emptyImageGate(), { tier: tierFor(token, env) });
+    normalizeImageGate(store.imageGateLoad(token, campaign) ?? emptyImageGate(), {
+      tier: tierFor(store.tenantMeta(token), env),
+    });
 
   return [
     {
@@ -166,7 +185,7 @@ export function imageTools(store, pinnedToken, deps = {}) {
           // Compose before spending: an unusable prompt should cost nothing.
           const prompt = composeImagePrompt({ scene, subject, tone, style });
 
-          const spend = spendImageRender(gate, at, { prompt });
+          const spend = spendImageRender(gate, at, { prompt, mintId });
           if (!spend.ok) {
             return refusal(spend.reason, REASON_HINTS[spend.reason], statusPayload(gate, at, renderer, model));
           }

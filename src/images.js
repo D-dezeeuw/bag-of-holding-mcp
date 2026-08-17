@@ -46,15 +46,29 @@ export function resolveImageConfig(env = process.env) {
 }
 
 /**
- * Which tier this caller plays on. Today: one server-wide setting
- * (`BOH_IMAGE_TIER`), defaulting to `free`. Tomorrow: a lookup keyed by the
- * memory token — the token already *is* the tenant, so a billing site that
- * mints tokens can name the tier alongside the hash, and the only change is
- * inside this function.
+ * Which tier this caller plays on: the tenant's own tier if the allowlist
+ * named one, else the server-wide `BOH_IMAGE_TIER`, else `free`.
  *
- * @param {string|undefined} _token  the caller's memory token (unused today)
+ * Tomorrow arrived — the token already *is* the tenant, so the registry that
+ * lists a token's hash can name its tier alongside, and this is where that
+ * lands. `BOH_IMAGE_TIER` stays as the deployment-wide default for tenants
+ * the registry says nothing about (env-allowlist tokens, or a single-tenant
+ * server with no registry at all).
+ *
+ * An unknown tier name is never an upgrade — from either source. The registry
+ * is written by the admin panel, which owns the tier vocabulary and validates
+ * on write; a name this build does not know means the two are out of step, and
+ * silently falling back beats handing out an allowance nobody priced.
+ * `Object.hasOwn` rather than `in`, so `toString` is not a tier.
+ *
+ * @param {{ tier?: string|null } | null | undefined} meta  the caller's
+ *   allowlist entry, from `store.tenantMeta(token)`. Null for an unknown or
+ *   open-mode caller, which simply means "no per-tenant tier".
+ * @param {Record<string, string|undefined>} [env]
  */
-export function tierFor(_token, env = process.env) {
+export function tierFor(meta, env = process.env) {
+  const assigned = meta?.tier;
+  if (typeof assigned === 'string' && Object.hasOwn(IMAGE_TIERS, assigned)) return assigned;
   const named = env.BOH_IMAGE_TIER;
   return typeof named === 'string' && Object.hasOwn(IMAGE_TIERS, named) ? named : DEFAULT_IMAGE_TIER;
 }
