@@ -285,3 +285,111 @@ export function createOperatorStore(opts = {}) {
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// The destructive half — deliberately a SEPARATE factory.
+//
+// `createOperatorStore` above is read-only by construction, and a test asserts
+// its exact method list. That contract is worth keeping, so deletion does not
+// join it: it lives here, under a name that says what it does, so the import
+// line in a consumer reads as an admission rather than an accident.
+//
+// Everything the read surface's header says still applies, and more sharply:
+// nothing under src/tools/ may import this, and filesystem access IS the
+// credential. There is no auth here because there is no request here.
+//
+// What this does NOT do, on purpose:
+//   - It does not check whether a tenant is allowed to be deleted. That is
+//     policy, and policy lives in the administration layer that knows what a
+//     tenant IS. This module knows only directories.
+//   - It does not stop the serving process from writing. A campaign being
+//     played while it is deleted is a race the CALLER must close — the panel
+//     does it by requiring the tenant be revoked first, which shuts the door
+//     ~2s before anything is removed.
+//
+// Every method captures what it is about to destroy and returns it, so the
+// caller can write an audit record that outlives the data it describes.
+
+/**
+ * Open a destructive view of a data directory.
+ *
+ * @param {{ dataDir?: string }} [opts]
+ */
+export function createOperatorPurge(opts = {}) {
+  const dataDir = opts.dataDir
+    ?? process.env.BOH_DATA_DIR
+    ?? path.join(os.homedir(), '.bag-of-holding');
+  const reader = createOperatorStore({ dataDir });
+
+  /**
+   * Resolve a path under the data directory, or throw.
+   *
+   * The name checks above already reject `..`, so this is the second lock on
+   * the same door: it re-resolves and proves the result is strictly inside
+   * the root. `rmSync(..., {recursive: true})` aimed one level too high
+   * deletes every tenant on the box, so this is worth asserting twice.
+   */
+  function within(...segments) {
+    const root = path.resolve(dataDir);
+    const target = path.resolve(root, ...segments);
+    if (target === root || !target.startsWith(root + path.sep)) {
+      throw new Error(`Refusing to delete ${target}: outside the data directory ${root}.`);
+    }
+    return target;
+  }
+
+  return {
+    dataDir,
+
+    /**
+     * Delete one campaign directory — memory log, state vault, image gate,
+     * world playthrough, everything under it.
+     *
+     * Returns what was destroyed. Throws when the campaign does not exist,
+     * so a double-submitted form is a visible error rather than a silent
+     * "deleted" for something that was already gone.
+     */
+    deleteCampaign(ns, campaign) {
+      assertName('namespace', ns);
+      assertName('campaign', campaign);
+      const dir = within(ns, campaign);
+      if (!fs.existsSync(dir)) {
+        throw new Error(`No campaign "${campaign}" in namespace "${ns}".`);
+      }
+      // Captured BEFORE the delete: this is what the audit record gets, and
+      // there is no second chance to read it.
+      const before = reader.namespaceOverview(ns).campaigns.find((c) => c.campaign === campaign) ?? null;
+      fs.rmSync(dir, { recursive: true, force: true });
+      return {
+        ns,
+        campaign,
+        records: before?.records ?? 0,
+        stateKeys: before?.stateKeys ?? 0,
+        ledgerEntries: before?.ledgerEntries ?? 0,
+        bytes: before?.bytes ?? 0,
+      };
+    },
+
+    /**
+     * Delete an entire namespace — every campaign a tenant has.
+     *
+     * Irreversible, and the largest thing this package can be asked to do.
+     * The caller is expected to have closed the door first; see the header.
+     */
+    deleteNamespace(ns) {
+      assertName('namespace', ns);
+      const dir = within(ns);
+      if (!fs.existsSync(dir)) {
+        throw new Error(`No namespace "${ns}" in ${dataDir}.`);
+      }
+      const before = reader.namespaceOverview(ns);
+      fs.rmSync(dir, { recursive: true, force: true });
+      return {
+        ns,
+        campaigns: before.campaigns.map((c) => c.campaign),
+        records: before.campaigns.reduce((sum, c) => sum + c.records, 0),
+        bytes: before.bytes,
+      };
+    },
+  };
+}

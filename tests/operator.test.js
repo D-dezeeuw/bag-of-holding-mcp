@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createMemoryStore } from '../src/memory/store.js';
-import { createOperatorStore } from '../src/operator.js';
+import { createOperatorStore, createOperatorPurge } from '../src/operator.js';
 
 // The operator surface reads what the memory store writes, so these tests
 // drive the real store rather than hand-building directories — a layout change
@@ -18,6 +18,7 @@ function mkPair() {
     dir,
     store: createMemoryStore({ dataDir: dir, tokenHashes: [] }),
     op: createOperatorStore({ dataDir: dir }),
+    purge: createOperatorPurge({ dataDir: dir }),
   };
 }
 after(() => {
@@ -306,5 +307,102 @@ test('the operator module loads without the MCP SDK or the engine', async () => 
       spec.startsWith('node:') || spec.startsWith('./'),
       `operator.js must import only node: builtins and local files, found ${spec}`
     );
+  }
+});
+
+// ---- the destructive surface ----------------------------------------------
+//
+// Kept as a separate factory so the read surface's "no write methods exist"
+// contract stays literally true. These tests are about two things: that it
+// deletes exactly what it says, and that it cannot be aimed anywhere else.
+
+test('deleting a campaign removes it and leaves the tenant\'s others alone', () => {
+  const { store, op, purge } = mkPair();
+  store.record('alice', 'doomed', { type: 'note', text: 'goodbye' });
+  store.stateSave('alice', 'doomed', 'party', { hp: 1 });
+  store.record('alice', 'kept', { type: 'note', text: 'still here' });
+  const ns = store.info('alice').namespace;
+
+  const destroyed = purge.deleteCampaign(ns, 'doomed');
+  assert.equal(destroyed.campaign, 'doomed');
+  assert.equal(destroyed.records, 1, 'the audit summary is captured before the delete');
+  assert.equal(destroyed.stateKeys, 1);
+  assert.ok(destroyed.bytes > 0);
+
+  assert.deepEqual(op.namespaceOverview(ns).campaigns.map((c) => c.campaign), ['kept']);
+  assert.equal(store.recent('alice', 'kept').records.length, 1, 'the surviving campaign still reads');
+});
+
+test('deleting a namespace removes every campaign and nobody else\'s', () => {
+  const { store, op, purge } = mkPair();
+  store.record('alice', 'one', { type: 'note', text: 'a' });
+  store.record('alice', 'two', { type: 'note', text: 'b' });
+  store.record('bob', 'his-own', { type: 'note', text: 'untouched' });
+  const alice = store.info('alice').namespace;
+  const bob = store.info('bob').namespace;
+
+  const destroyed = purge.deleteNamespace(alice);
+  assert.deepEqual(destroyed.campaigns.sort(), ['one', 'two']);
+  assert.equal(destroyed.records, 2);
+  assert.ok(destroyed.bytes > 0);
+
+  assert.equal(op.namespaceOverview(alice).exists, false);
+  assert.deepEqual(op.listNamespaces().map((n) => n.ns), [bob]);
+  assert.equal(store.recent('bob', 'his-own').records.length, 1);
+});
+
+test('deleting something that is not there is an error, not a silent success', () => {
+  // A double-submitted form should say so rather than report a second delete.
+  const { store, purge } = mkPair();
+  store.record('alice', 'fen', { type: 'note', text: 'a' });
+  const ns = store.info('alice').namespace;
+  assert.throws(() => purge.deleteCampaign(ns, 'never-existed'), /No campaign "never-existed"/);
+  purge.deleteCampaign(ns, 'fen');
+  assert.throws(() => purge.deleteCampaign(ns, 'fen'), /No campaign "fen"/);
+  purge.deleteNamespace(ns);
+  assert.throws(() => purge.deleteNamespace(ns), /No namespace/);
+});
+
+test('nothing can be aimed outside the data directory', () => {
+  // rmSync(recursive) pointed one level too high deletes every tenant on the
+  // box, so the guard is asserted rather than assumed.
+  const { store, purge, dir } = mkPair();
+  store.record('alice', 'fen', { type: 'note', text: 'a' });
+  const ns = store.info('alice').namespace;
+
+  for (const bad of ['..', '../..', '/etc', 'a/b', '', '.', '-lead']) {
+    assert.throws(() => purge.deleteNamespace(bad), /Invalid namespace/, `ns ${JSON.stringify(bad)}`);
+    assert.throws(() => purge.deleteCampaign(ns, bad), /Invalid campaign/, `campaign ${JSON.stringify(bad)}`);
+  }
+  assert.throws(() => purge.deleteNamespace(undefined), /Invalid namespace/);
+  // And the data directory itself survives all of that.
+  assert.ok(fs.existsSync(dir));
+  assert.ok(fs.existsSync(path.join(dir, ns)));
+});
+
+test('the purge surface is exactly two operations', () => {
+  // If a third appears, it should be a deliberate decision with its own test —
+  // this factory is the one place in the package that destroys data.
+  const { purge } = mkPair();
+  assert.deepEqual(Object.keys(purge).sort(), ['dataDir', 'deleteCampaign', 'deleteNamespace']);
+});
+
+test('the read surface still has no write methods', () => {
+  // The whole reason deletion is a separate factory.
+  const { op } = mkPair();
+  assert.deepEqual(Object.keys(op).sort(),
+    ['dataDir', 'exportCampaign', 'listNamespaces', 'namespaceOverview']);
+});
+
+test('the purge factory resolves its data directory the same way', () => {
+  const previous = process.env.BOH_DATA_DIR;
+  try {
+    process.env.BOH_DATA_DIR = '/tmp/boh-purge-env-check';
+    assert.equal(createOperatorPurge().dataDir, '/tmp/boh-purge-env-check');
+    delete process.env.BOH_DATA_DIR;
+    assert.equal(createOperatorPurge().dataDir, path.join(os.homedir(), '.bag-of-holding'));
+  } finally {
+    if (previous === undefined) delete process.env.BOH_DATA_DIR;
+    else process.env.BOH_DATA_DIR = previous;
   }
 });

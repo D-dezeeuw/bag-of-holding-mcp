@@ -335,9 +335,11 @@ op.exportCampaign(ns, campaign);  // same shape as the memory_export tool
 
 Three things about it are contract rather than implementation detail:
 
-- **It is read-only.** There are no write methods, and adding one would
-  defeat the point — administration provisions tenants through the registry
-  file, and never reaches into campaign data.
+- **The read surface is read-only.** `createOperatorStore` has no write
+  methods, and a test asserts its exact method list. Deletion lives in a
+  separate `createOperatorPurge` factory, so an import of it reads as an
+  admission rather than an accident, and the read surface stays literally
+  write-free.
 - **It is not a tool, and must not become one.** Nothing under `src/tools/`
   imports it. `createServer` never sees it.
 - **Filesystem access is the credential.** There is no auth here because
@@ -353,6 +355,21 @@ It imports `node:` builtins and one local path helper — no MCP SDK, no zod,
 no engine — so a dashboard can depend on it cheaply. Readers are tolerant of
 being run while the server is writing: a torn trailing line comes back as
 `truncatedTail: true` rather than an exception.
+
+```js
+import { createOperatorPurge } from '@zeeuw/bag-of-holding-mcp/operator';
+
+const purge = createOperatorPurge({ dataDir: '/data' });
+purge.deleteCampaign(ns, campaign);  // returns what it destroyed
+purge.deleteNamespace(ns);           // every campaign a tenant has
+```
+
+Both return a summary captured *before* the delete, so a caller can write an
+audit record that outlives the data. Neither checks whether the target should
+be deleted — that is policy, and policy belongs to the layer that knows what a
+tenant is. Neither stops the serving process from writing either: closing that
+race is the caller's job (the admin panel requires a tenant be revoked first,
+which shuts the door before anything is removed).
 
 ## Honest limits
 
