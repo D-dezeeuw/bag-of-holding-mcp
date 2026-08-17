@@ -7,6 +7,8 @@
 // stance as the engine's SRD registries.
 
 import { greyfen } from './greyfen.js';
+import { gutterlight } from './gutterlight.js';
+import { hollowVale } from './hollow-vale.js';
 
 /**
  * Recursively freeze a value. Exported for pack authors: freeze
@@ -23,7 +25,9 @@ export function deepFreeze(value) {
 }
 
 export const worlds = deepFreeze({
-  [greyfen.id]: greyfen
+  [greyfen.id]: greyfen,
+  [gutterlight.id]: gutterlight,
+  [hollowVale.id]: hollowVale
 });
 
 /** Look up a pack by id; the error names what does exist. */
