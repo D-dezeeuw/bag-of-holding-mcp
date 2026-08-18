@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 // Guards on the deployment files. These are not style checks — each one
@@ -221,4 +222,29 @@ test('the operator scripts reach the image that is meant to run them', () => {
   // so both were absent until it named scripts/ — unreachable in the exact
   // place they exist to run.
   assert.match(dockerfile, /^COPY scripts\/ \.\/scripts\/$/m);
+});
+
+
+test('every node -e snippet in post-deploy.sh actually parses', () => {
+  // `node -e` evaluates a plain script, not a CommonJS module, so a
+  // top-level `return` is a SyntaxError rather than an early exit. Two
+  // checks shipped with exactly that, `2>/dev/null` ate the error, and a
+  // healthy host reported "could not read the world shelf" on every
+  // deploy — a code bug wearing an infrastructure bug's clothes.
+  //
+  // `new vm.Script(src)` COMPILES the source as a script — the same thing
+  // `node -e` does — so it rejects an illegal top-level return without
+  // running a line. `new Function(src)` is the trap here: it makes the
+  // source a function BODY, where `return` is perfectly legal, so it
+  // cheerfully accepts the exact bug this test exists to catch.
+  const postDeploy = read('scripts/post-deploy.sh');
+  const snippets = [...postDeploy.matchAll(/node -e "\n([\s\S]*?)\n"/g)].map((m) => m[1]);
+  assert.ok(snippets.length >= 4, `expected the deploy checks, found ${snippets.length}`);
+  for (const src of snippets) {
+    // The shell interpolates \$ before node sees it; undo that so we parse
+    // what node would actually be handed.
+    const asNodeSees = src.replace(/\\\$/g, '$');
+    assert.doesNotThrow(() => new vm.Script(asNodeSees),
+      `a post-deploy snippet does not parse the way node -e will:\n${asNodeSees.slice(0, 200)}`);
+  }
 });
