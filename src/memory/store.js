@@ -38,6 +38,7 @@ import { createTenantRegistry } from './registry.js';
 import {
   campaignDirOf, memoryFileOf, stateDirOf, imageGateFileOf,
   worldPinFileOf, worldLedgerFileOf, worldObservedFileOf,
+  namespaceDirOf, relayBudgetFileOf,
   parseJsonl, liveRecords,
 } from './layout.js';
 
@@ -234,6 +235,8 @@ export function createMemoryStore(opts = {}) {
   const memoryFile = (ns, campaign) => memoryFileOf(dataDir, ns, campaign);
   const stateDir = (ns, campaign) => stateDirOf(dataDir, ns, campaign);
   const imageGateFile = (ns, campaign) => imageGateFileOf(dataDir, ns, campaign);
+  const namespaceDir = (ns) => namespaceDirOf(dataDir, ns);
+  const relayBudgetFile = (ns) => relayBudgetFileOf(dataDir, ns);
   const worldPinFile = (ns, campaign) => worldPinFileOf(dataDir, ns, campaign);
   const worldLedgerFile = (ns, campaign) => worldLedgerFileOf(dataDir, ns, campaign);
   const worldObservedFile = (ns, campaign) => worldObservedFileOf(dataDir, ns, campaign);
@@ -721,6 +724,40 @@ export function createMemoryStore(opts = {}) {
       fs.mkdirSync(campaignDir(ns, campaign), { recursive: true });
       fs.writeFileSync(imageGateFile(ns, campaign), JSON.stringify(gate, null, 2), 'utf8');
       return gate;
+    },
+
+    /**
+     * Read the tenant's inference budget, or null when nothing has been spent
+     * yet. Per tenant, not per campaign: what it meters is spend against the
+     * operator's provider key, and a per-campaign file would refill itself
+     * every time a player started a new campaign.
+     *
+     * A corrupt file reads as null and heals to a fresh window. That direction
+     * is a gift of one window's tokens rather than a locked-out table, which is
+     * the right way round for a file only this server writes — and the tier
+     * ceiling still applies, so the gift is bounded.
+     */
+    relayBudgetLoad(token) {
+      const ns = namespaceFor(token);
+      const file = relayBudgetFile(ns);
+      if (!fs.existsSync(file)) return null;
+      try {
+        return JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch {
+        return null;
+      }
+    },
+
+    /**
+     * Write the tenant's inference budget. Last write wins, like the image
+     * gate: two concurrent turns can lose one charge between them, which is
+     * cheaper than a lock on the hot path and self-correcting on the next call.
+     */
+    relayBudgetSave(token, budget) {
+      const ns = namespaceFor(token);
+      fs.mkdirSync(namespaceDir(ns), { recursive: true });
+      fs.writeFileSync(relayBudgetFile(ns), JSON.stringify(budget, null, 2), 'utf8');
+      return budget;
     },
 
     // ── World playthrough binding ─────────────────────────────────────────

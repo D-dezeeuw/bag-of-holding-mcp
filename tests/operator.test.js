@@ -406,3 +406,23 @@ test('the purge factory resolves its data directory the same way', () => {
     else process.env.BOH_DATA_DIR = previous;
   }
 });
+
+test('the relay budget survives a campaign delete and dies with the namespace', () => {
+  // The one cross-feature invariant the inference relay adds to this surface.
+  // Deleting a campaign must NOT refill a tenant's token allowance — that
+  // would make "start a new campaign" the cheapest way to buy inference — so
+  // the budget deliberately sits beside the campaign directories rather than
+  // inside one. Deleting the tenant, on the other hand, must take it: a
+  // reissued namespace starting on last month's spend would be a table that
+  // cannot play.
+  const { store, purge } = mkPair();
+  store.record('alice', 'doomed', { type: 'note', text: 'goodbye' });
+  store.relayBudgetSave('alice', { v: 1, tier: 'free', spent: 120_000, windowStart: 1, calls: 40, tokens: 120_000 });
+  const ns = store.info('alice').namespace;
+
+  purge.deleteCampaign(ns, 'doomed');
+  assert.equal(store.relayBudgetLoad('alice').spent, 120_000, 'a new campaign is not a fresh allowance');
+
+  purge.deleteNamespace(ns);
+  assert.equal(store.relayBudgetLoad('alice'), null);
+});

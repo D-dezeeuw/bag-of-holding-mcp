@@ -43,4 +43,9 @@ export { createPlaythroughs } from './src/playthroughs.js';
 // picture may be made at all — deliberately lives in @zeeuw/bag-of-holding-client
 // (llm/imagegate.js), because the browser host enforces the same budget.
 export { resolveImageConfig, tierFor, renderImage, splitDataUri, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_BASE_URL } from './src/images.js';
+// Inference relay: the same split one layer over. The *budget* — how many
+// tokens a tenant may spend — lives in the client toolkit (llm/relaygate.js)
+// because a browser host reads the same numbers back off /v1/status; this
+// server resolves the tier, guards the model list, and does the charging.
+export { resolveRelayConfig, relayTierFor, modelsForTier, allowedModels, planCompletion } from './src/relay.js';
 export { worlds as worldPacks, getWorld } from './src/world/index.js';
