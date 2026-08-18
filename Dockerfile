@@ -77,6 +77,11 @@ COPY --from=builder /build/node_modules ./node_modules
 COPY package.json index.js index.d.ts ./
 COPY src/ ./src/
 COPY bin/ ./bin/
+# Operator scripts: seed-worlds.js runs as the one-shot that fills the
+# shelf before the server reads it, and publish-revision.js is the only
+# supported way to add a revision. Both were absent from this allowlist,
+# which made them unreachable in the very place they are meant to run.
+COPY scripts/ ./scripts/
 # Both volume mount points, created owned by boh.
 #
 # This is not cosmetic and it is not only about THIS container. When Docker
@@ -92,11 +97,18 @@ COPY bin/ ./bin/
 #
 # So both images that touch this volume create it owned by boh (uid 10101),
 # and the deploy order stops mattering.
-RUN mkdir -p /data /registry && chown boh:boh /data /registry
+#
+# /worlds is the third, and it is the case the rule was written for: the
+# worlds-seed one-shot mounts it READ-WRITE and this container mounts it
+# read-only, from the same image — so if the mount point were missing,
+# whichever ran first would hand the other a root-owned volume it cannot
+# bake into.
+RUN mkdir -p /data /registry /worlds && chown boh:boh /data /registry /worlds
 USER boh
 ENV NODE_ENV=production \
     BOH_HTTP_PORT=8091 \
     BOH_DATA_DIR=/data \
+    BOH_WORLDS_DIR=/worlds \
     # Cap V8's heap well under the compose file's mem_limit (256m).
     # Without this, V8 derives its limit from HOST RAM and has no
     # reason to collect before the cgroup OOM-kills the container —
@@ -104,7 +116,9 @@ ENV NODE_ENV=production \
     # vs a steady 178 MB at 128 MB old-space. 192 leaves headroom
     # for buffers, sockets and the base image.
     NODE_OPTIONS=--max-old-space-size=192
-EXPOSE 8091
+# 8091 the MCP surface, 8099 the static browser pages. Neither is
+# published to the host; the proxy reaches both over the docker network.
+EXPOSE 8091 8099
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.BOH_HTTP_PORT||8091)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["node", "bin/http.js"]

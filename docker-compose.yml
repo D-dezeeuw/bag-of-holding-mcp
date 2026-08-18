@@ -1,10 +1,13 @@
 name: bag-of-holding-mcp
 
-# Three containers, two networks, one public surface.
+# Four containers (one a one-shot), three networks, two public surfaces.
 #
 #   nginx-proxy-manager_default (external) ── mcp @ 172.22.0.44 ← NPM proxies
 #                                              │                  the hostname
 #   boh-internal (internal: true) ─────────────┤
+#                                              ├── worlds-seed (one-shot; fills
+#                                              │                the world shelf,
+#                                              │                then exits)
 #                                              ├── qdrant     (no public route)
 #                                              └── embeddings (no public route)
 #
@@ -34,10 +37,30 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Tagged so worlds-seed below can reuse this exact image instead of
+    # declaring its own build — two build stanzas for one Dockerfile means
+    # two images, two entries for the label-scoped prune to chase, and a
+    # window where the seeder and the server disagree about what the
+    # client library contains.
+    image: bag-of-holding-mcp:local
     container_name: bag-of-holding-mcp-server
     environment:
       BOH_HTTP_PORT: "8091"
       BOH_DATA_DIR: /data
+      # The browser pages (the client home at /, the atlas at /atlas), on
+      # their own unauthenticated port. Safe to expose because that
+      # listener serves static files and nothing else — no token, no store,
+      # no shelf. Unset it and the surface does not exist.
+      BOH_UI_PORT: "8099"
+      # Set this when the proxy forwards a path prefix rather than
+      # stripping it (nginx-proxy-manager Custom Locations do forward it).
+      # Empty when the pages sit at the root of their own hostname.
+      BOH_UI_BASE_PATH: ${BOH_UI_BASE_PATH:-}
+      # The world shelf: baked cartridges, mounted read-only below. `:-`
+      # and not `:?` for the same reason as the tenant registry — a server
+      # with no worlds is a valid deployment, and world_catalog answers
+      # cleanly for one rather than refusing to boot.
+      BOH_WORLDS_DIR: ${BOH_WORLDS_DIR:-/worlds}
       # The allowlist IS the auth. bin/http.js refuses to start without
       # it rather than serving every campaign to anyone who finds the URL,
       # so a half-configured deploy fails closed instead of open.
@@ -89,6 +112,12 @@ services:
       # panel and this server must never both be able to write a file that
       # decides who is allowed in.
       - boh-registry:/registry:ro
+      # The world shelf, READ-ONLY here for the registry's reason: only
+      # src/worlds.js reads it, and the one writer (worlds-seed, plus
+      # scripts/publish-revision.js in a one-off) must be the only thing
+      # that CAN write. A cartridge is immutable the moment a campaign
+      # pins its digest.
+      - boh-worlds:/worlds:ro
     networks:
       # Pinned like the other stacks on this host: NPM caches the upstream
       # IP at config load, so a rebuild-assigned dynamic IP would 502 every
@@ -98,8 +127,17 @@ services:
         ipv4_address: 172.22.0.44
       boh-internal:
     depends_on:
-      - qdrant
-      - embeddings
+      qdrant:
+        condition: service_started
+      embeddings:
+        condition: service_started
+      # Not ordering for its own sake: the shelf must be COMPLETE before
+      # this process starts. createWorlds reads the directory once, at
+      # boot, and never again — unlike the tenant registry, which
+      # hot-reloads — so a cartridge that lands a second later stays
+      # invisible until the next restart.
+      worlds-seed:
+        condition: service_completed_successfully
     restart: unless-stopped
     read_only: true              # every write goes to the volume or tmpfs
     tmpfs:
@@ -112,6 +150,55 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
+
+  # The shelf-filler. A one-shot: it bakes the seeds named in
+  # BOH_SEED_WORLDS into the worlds volume, SKIPS anything already there,
+  # and exits. Every deploy re-runs it and every deploy after the first
+  # reports "already on the shelf" — that is the design, not a wasted step.
+  #
+  # Why this is not baked into the image: a keyless bake is deterministic,
+  # but deterministic-per-version is not the same as stable. Change the
+  # generator and the same seed mints a different world — while campaigns
+  # carry the old digest in their pin and fold their ledger over that exact
+  # content. Baking at image build would re-mint the shelf on the next
+  # unrelated deploy and strand every pinned campaign. Bake once into a
+  # volume; keep the artifact.
+  #
+  # Deliberately NOT in DEPLOY_KEEP_SERVICES: it costs milliseconds when
+  # there is nothing to do, and skipping it is how a shelf quietly stays
+  # empty.
+  worlds-seed:
+    image: bag-of-holding-mcp:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bag-of-holding-mcp-worlds-seed
+    entrypoint: ["node", "scripts/seed-worlds.js"]
+    environment:
+      BOH_WORLDS_DIR: /worlds
+      # Comma-separated seeds. Empty is valid and means "I manage the shelf
+      # myself" — the script says so and exits 0, so the gate opens.
+      BOH_SEED_WORLDS: ${BOH_SEED_WORLDS:-}
+    volumes:
+      # The one writer. Read-write here, read-only everywhere else.
+      - boh-worlds:/worlds
+    networks:
+      # boh-internal only: a keyless bake is pure computation and reaches
+      # nothing. No egress, no proxy network, no public address.
+      boh-internal:
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    mem_limit: 256m
+    cpus: "0.50"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
 
   qdrant:
     image: qdrant/qdrant:v1.15.1
@@ -220,6 +307,7 @@ networks:
 volumes:
   boh-data:                      # memory log + state vault (back this up)
   boh-registry:                  # tenant allowlist; the admin stack writes it
+  boh-worlds:                    # baked cartridges (back this up)
 
   boh-qdrant:                    # vectors (rebuildable from boh-data)
   boh-hf-cache:                  # model weights (re-downloadable)

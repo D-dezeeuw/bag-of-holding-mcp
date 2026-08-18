@@ -32,6 +32,7 @@ import { createServer } from './server.js';
 import { createSessions } from './sessions.js';
 import { createMemoryStore } from './memory/store.js';
 import { createWorlds } from './worlds.js';
+import { listenUi } from './ui-server.js';
 import {
   resolveRelayConfig, relayTierFor, planCompletion, modelsPayload, statusPayload,
   budgetForTier, chargeCall, usageTokens, RELAY_TIMEOUT_MS,
@@ -454,9 +455,15 @@ export async function main({ env = process.env, out = console, ...opts } = {}) {
     // stdout, not stderr: this is the healthy path, and the
     // container log should open with proof of which surface is up.
     out.log(`bag-of-holding-mcp listening on :${port} (POST /mcp/<token>, GET /health)`);
-    return { code: 0, server };
+    // The browser pages, on their own port, after the MCP surface is up
+    // — it is the product, this is a convenience. `listenUi` returns null
+    // when BOH_UI_PORT is unset (every path but the container) and
+    // reports-and-skips when the client package has no pages to serve,
+    // so neither can keep a table's server from starting.
+    const ui = await listenUi({ env, out });
+    return { code: 0, server, ui };
   } catch (err) {
     out.error(`FATAL: ${err.message}`);
-    return { code: 2, server: null };
+    return { code: 2, server: null, ui: null };
   }
 }
