@@ -584,6 +584,32 @@ export interface Playthroughs {
    * upgrade ({ ok: false, conflicts }); dryRun reports without moving.
    */
   upgrade(token: string | undefined, campaign: string, toRevision: number, opts?: { dryRun?: boolean }): Record<string, unknown>;
+  /**
+   * The campaign's world as the table knows it — the payload behind the
+   * live atlas views. The pinned revision's geography, folded through the
+   * campaign's ledger and narrowed to what this campaign has discovered,
+   * then run through the client's playerCut. Player edition only, by
+   * design: this is meant to render on a screen the players can see.
+   * Null when the campaign has never begun a world; throws when the shelf
+   * can no longer resolve the pinned revision.
+   */
+  atlas(token: string | undefined, campaign: string): {
+    campaign: string;
+    worldId: string;
+    revision: number;
+    digest: string | null;
+    start: string | null;
+    edition: 'player';
+    seed: number | null;
+    settingId: string | null;
+    worldShape: { continents: number };
+    geo: { nodes: Record<string, Record<string, unknown>>; edges: Array<Record<string, unknown>> };
+    factions: Array<Record<string, unknown>>;
+    npcs: Array<Record<string, unknown>>;
+    warState: Record<string, unknown> | null;
+    lore: Record<string, unknown>;
+    counts: { continents: number; provinces: number; links: number; powers: number; wars: number };
+  } | null;
   /** Record that the party has seen a node whole (feeds the revision publish gate in scripts/publish-revision.js). */
   observeRead(token: string | undefined, campaign: string, nodeId: string): void;
 }

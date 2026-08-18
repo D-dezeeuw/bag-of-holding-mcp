@@ -197,7 +197,7 @@ test('createServer registers the world tools and world:// resources', () => {
     worldsDir: dir,
     memory: { dataDir: mkdtempSync(join(tmpdir(), 'boh-srv-')), tokenHashes: [] },
   });
-  for (const name of ['world_catalog', 'world_begin', 'world_node', 'world_lineage', 'world_commit', 'world_replay']) {
+  for (const name of ['world_catalog', 'world_begin', 'world_node', 'world_lineage', 'world_commit', 'world_replay', 'world_atlas']) {
     assert.ok(all.some(t => t.name === name), name);
   }
   assert.equal(w.list().length, 1);
@@ -254,4 +254,61 @@ test('a cartridge baked without a setting reports null rather than guessing', as
   assert.equal(r.structuredContent.worlds[0].setting, null);
   const b = await tool('world_begin')({ campaign: 'fen-setting', world: 'world-1234' });
   assert.equal(b.structuredContent.setting, null);
+});
+
+// ─── The atlas feed ──────────────────────────────────────────────────────────
+//
+// world_atlas is the one world read meant for a screen the PLAYERS can see,
+// so the tool-level contract is the interesting one: what the handler hands
+// back is what a browser receives.
+
+test('world_atlas refuses an unbound campaign with a pointer at world_begin', async () => {
+  const r = await tool('world_atlas')({ campaign: 'fen-no-world' });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /world_begin first/);
+});
+
+test('world_atlas serves the campaign map, and world_node({ campaign }) is what grows it', async () => {
+  const t = freshTools(worlds);
+  const call = (name) => t.find(x => x.name === name).handler;
+  const begun = (await call('world_begin')({ campaign: 'fen-atlas', world: 'world-1234' })).structuredContent;
+
+  const first = (await call('world_atlas')({ campaign: 'fen-atlas' })).structuredContent;
+  assert.equal(first.edition, 'player');
+  assert.equal(first.worldId, 'world-1234');
+  assert.equal(first.campaign, 'fen-atlas');
+  assert.equal(first.digest, begun.digest);
+  assert.equal(first.counts.provinces, 1, 'the campaign has only landed');
+  assert.ok(first.worldShape.continents >= 1);
+
+  // Walking in is a world_node read WITH the campaign — that is the whole
+  // discovery mechanism, and the atlas is where the table sees it happen.
+  const unseen = worlds.get('world-1234').provinces.find(p => p !== begun.start);
+  await call('world_node')({ world: 'world-1234', node: unseen, campaign: 'fen-atlas' });
+
+  const after = (await call('world_atlas')({ campaign: 'fen-atlas' })).structuredContent;
+  assert.equal(after.counts.provinces, 2);
+  assert.ok(after.geo.nodes[unseen], 'the province the party walked into is on their map');
+  // A world_node read WITHOUT the campaign is the DM looking something up.
+  // It must not put the place on the players' map.
+  const other = worlds.get('world-1234').provinces.find(p => p !== begun.start && p !== unseen);
+  await call('world_node')({ world: 'world-1234', node: other });
+  const still = (await call('world_atlas')({ campaign: 'fen-atlas' })).structuredContent;
+  assert.equal(still.counts.provinces, 2, 'a DM lookup revealed a place to the players');
+});
+
+test('world_atlas never ships a place the campaign has not reached', async () => {
+  const t = freshTools(worlds);
+  const call = (name) => t.find(x => x.name === name).handler;
+  const begun = (await call('world_begin')({ campaign: 'fen-fog', world: 'world-1234' })).structuredContent;
+  const full = worlds.get('world-1234');
+
+  const wire = JSON.stringify((await call('world_atlas')({ campaign: 'fen-fog' })).structuredContent);
+  for (const id of full.provinces.filter(p => p !== begun.start)) {
+    assert.ok(!wire.includes(id), `world_atlas leaked ${id}`);
+    assert.ok(!wire.includes(full.geo.nodes[id].name), `world_atlas leaked ${full.geo.nodes[id].name}`);
+  }
+  // And no face on the players' map is carrying their private agenda.
+  const payload = (await call('world_atlas')({ campaign: 'fen-fog' })).structuredContent;
+  for (const n of payload.npcs) assert.ok(!('wants' in n), `${n.name} shipped their wants`);
 });

@@ -1,7 +1,7 @@
 // Campaign guides — the server's how-to-play knowledge.
 //
 // The tool descriptions teach one call at a time; these guides
-// teach the loop. They exist because "107 tools appeared" is not a
+// teach the loop. They exist because "108 tools appeared" is not a
 // playbook: a host model needs to know when to roll, what to
 // record, and how the pieces (engine session, memory log, state
 // vault, world pack) compose into a campaign that survives weeks.
@@ -100,6 +100,16 @@ player's call alone — offer \`memory_export\` as a backup first, and
   outranks your improvisation.
 - After every scene worth remembering: one \`memory_record\`
   (see the memory-protocol guide for what "worth remembering" means).
+- On a generated world, call \`world_node({ campaign })\` — with the
+  campaign — the moment the party ARRIVES somewhere. That is what
+  marks the place found, and found is what the players' map draws.
+- \`world_atlas({ campaign })\` is the only world read that is safe
+  to put on a shared screen: it returns the map as this table knows
+  it, with everything unfound DELETED server-side rather than
+  hidden. Offer it when someone asks "where are we?" or "who is
+  fighting whom?". Every other world read (\`world_secrets\`,
+  \`world_powers\`, \`world_export({ edition: "gm" })\`) is for your
+  eyes; keep those in your own context and speak them as prose.
 
 ## Every session end — non-negotiable
 

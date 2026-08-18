@@ -23,7 +23,7 @@ test('createServer wires every tool module so the AI gets the full surface in on
   assert.ok(sessions);
   assert.ok(memory);
   const names = new Set(tools.map((t) => t.name));
-  assert.equal(names.size, 107, 'tool count is part of the README contract');
+  assert.equal(names.size, 108, 'tool count is part of the README contract');
   assert.equal(names.size, tools.length, 'no two tools may share a name');
   for (const expected of [
     'engine_create_session', 'engine_get_roll_log', 'engine_verify_log',
@@ -57,7 +57,7 @@ test('createServer() with no options stands up on environment defaults without t
   const { server, sessions, memory, tools } = createServer();
   assert.ok(server);
   assert.ok(sessions.get());
-  assert.equal(tools.length, 107);
+  assert.equal(tools.length, 108);
   assert.equal(typeof memory.dataDir, 'string');
 });
 

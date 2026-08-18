@@ -2,7 +2,7 @@
 
 **Status:** historical design record, written against 0.2.0. Its core
 shipped then; the tool counts and follow-up list below reflect that
-era (the server has since grown to 107 tools across campaigns,
+era (the server has since grown to 108 tools across campaigns,
 cartridges, images, solo sessions and narration — see the README's
 tool inventory for the live surface). Kept for the reasoning, not as
 a status page.
@@ -140,7 +140,7 @@ Division of labour after this change:
   entities/tags, blended with importance and log-position recency.
   Deterministic: same store + same query → same ranking.
 
-### Tools (21 new at the time; 63 → 84, since grown to 107)
+### Tools (21 new at the time; 63 → 84, since grown to 108)
 
 | Group | Tools |
 | --- | --- |
