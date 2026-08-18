@@ -10,7 +10,11 @@ and two sidecars.
 
 ```
 nginx-proxy-manager_default (external, 172.22.0.0/16)
-  └── bag-of-holding-mcp-server   172.22.0.44:8091  ← NPM proxies the hostname here
+  └── bag-of-holding-mcp-server   172.22.0.44:8091  ← MCP, token-authenticated
+                                  172.22.0.44:8099  ← browser pages, static, no auth
+                │
+(one-shot, exits before the server starts)
+  └── bag-of-holding-mcp-worlds-seed   bakes cartridges into boh-worlds
                 │
 boh-internal (internal: true — no gateway, no route off-host)
   ├── bag-of-holding-mcp-qdrant       vectors
@@ -85,6 +89,18 @@ Then, before the first deploy:
 5. **Point NPM at it.** A new proxy host for the hostname you want, forwarding
    to `172.22.0.44:8091`, with TLS as usual. Websockets are not required —
    the transport is plain POST.
+6. **Optionally, point NPM at the pages too** — `172.22.0.44:8099`, which
+   serves the client home at `/` and the world atlas at `/atlas`. Either give
+   it its own hostname (nothing more to configure) or add it as a Custom
+   Location on an existing one. NPM's Custom Locations **forward the path
+   prefix** rather than stripping it, so a location of `/client` needs
+   `BOH_UI_BASE_PATH=/client` in `.env` or every asset 404s.
+
+   This port has no authentication, deliberately: it serves static files out
+   of the client package and nothing else — no token, no store, no shelf.
+   The pages bake a world in the browser. Showing a REAL campaign is the
+   host's job, through its own authenticated proxy calling `world_atlas`;
+   see the client's `docs/world-atlas.md`.
 
 Deploy with `sudo -n /nebula/apps/deploy-bag-of-holding-mcp.sh`, or just push
 to `main` and let CI do it.
@@ -297,6 +313,10 @@ system's secret.
 Two volumes matter, and unequally:
 
 - **`boh-data`** — the memory log and state vault. Irreplaceable. Back this up.
+- **`boh-worlds`** — baked cartridges. Back this up. Nominally regenerable
+  from a seed, but only by the exact generator version that first baked it:
+  campaigns pin a cartridge by digest, so a re-mint under a running campaign
+  strands it. Treat a cartridge like a published version — immutable.
 - **`boh-qdrant`** — vectors. Fully rebuildable: drop the collection and the
   next search re-embeds from `boh-data`.
 - `boh-hf-cache` — model weights, re-downloadable.
@@ -306,6 +326,51 @@ docker run --rm -v bag-of-holding-mcp_boh-data:/data -v "$PWD:/backup" \
   alpine tar czf /backup/boh-data-$(date +%F).tar.gz -C /data .
 ```
 
+## The world shelf
+
+Generated world cartridges live in the `boh-worlds` volume, mounted at
+`/worlds` and **read-only** in the server — the same single-writer split as
+the tenant registry, and for a sharper reason: a campaign pins a cartridge
+by digest, so anything able to rewrite one would strand every campaign
+playing it.
+
+The shelf is filled by `worlds-seed`, a one-shot that runs before the server
+starts. It bakes the seeds named in `BOH_SEED_WORLDS`, **skips anything
+already present**, and exits. Every deploy re-runs it, and every deploy after
+the first should report `already on the shelf`. An empty shelf is a valid
+deployment — `world_catalog` says so cleanly — and `scripts/post-deploy.sh`
+prints the cartridge count on every deploy so "deliberately empty" and
+"forgot to set `BOH_SEED_WORLDS`" are told apart here rather than at
+somebody's table.
+
+**The shelf is read once, at process start.** Unlike `BOH_TENANT_REGISTRY`,
+it does not hot-reload. A cartridge added to the volume while the server is
+up stays invisible until:
+
+```bash
+docker compose restart mcp
+```
+
+That is also why `worlds-seed` is gated with
+`condition: service_completed_successfully` rather than plain ordering — the
+directory has to be complete before the server reads it, not merely being
+written.
+
+To add a world by hand rather than by seed, bake it with the client's
+`scripts/bake-world.js` and copy it in through a read-write one-off (the
+server's own mount cannot write):
+
+```bash
+docker run --rm -v bag-of-holding-mcp_boh-worlds:/w -v "$PWD/worlds:/src:ro" \
+  alpine sh -c 'cp /src/world-*.json /w/'
+docker compose restart mcp
+```
+
+Revisions go in `revisions/` under the same volume, published with
+`scripts/publish-revision.js` — also a read-write one-off, and also a script
+rather than a tool, because its advisory scan reads every tenant's
+observation file.
+
 ## Blast radius: what a deploy can destroy
 
 `deploy.sh` runs as root and does four destructive things. Three are scoped;
@@ -314,7 +379,7 @@ know what the scopes are before adding a service or renaming anything.
 | Operation | Scope | Watch out |
 | --- | --- | --- |
 | `git reset --hard origin/<branch>` | this checkout | **Discards local edits to tracked files.** The deploy *is* the branch. Untracked files (`.env`) survive. |
-| `compose rm --stop --force` | services in this file, minus `DEPLOY_KEEP_SERVICES` | Add a stateful service → add it to that list in `.env`. |
+| `compose rm --stop --force` | services in this file, minus `DEPLOY_KEEP_SERVICES` | Add a stateful service → add it to that list in `.env`. `worlds-seed` is deliberately NOT on it: it is a one-shot that no-ops when the shelf is already full, and skipping it is how a shelf quietly stays empty. Note nothing here touches **volumes** — `boh-worlds` and its cartridges survive every deploy. |
 | stray sweep: `docker rm -f` | containers named `^bag-of-holding-mcp-` whose compose-project label differs | **Force-removes by name prefix, across projects.** This is why the project name must be specific. |
 | `docker image prune` | `--filter label=com.docker.compose.project=bag-of-holding-mcp` | Scoped deliberately; a bare `docker image prune -f` would reap every dangling image on the host, including other apps' rollback targets. The filter matches because the Dockerfile sets that label — keep it in sync with `name:` in the compose file. |
 

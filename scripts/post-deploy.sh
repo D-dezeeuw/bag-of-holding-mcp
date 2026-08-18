@@ -60,6 +60,41 @@ else
   status=1
 fi
 
+# The world shelf. Informational like the sidecar probe below, and for the
+# same reason: an empty shelf is a legitimate deployment. But it is also what
+# a forgotten BOH_SEED_WORLDS looks like, and the symptom otherwise surfaces
+# much later as world_begin answering "unknown world" at somebody's table.
+# Say the number out loud on every deploy so the two cases are told apart
+# here rather than there.
+echo "    checking the world shelf..."
+dc exec -T mcp node -e "
+const fs = require('fs'); const dir = process.env.BOH_WORLDS_DIR;
+if (!dir) return console.log('    no BOH_WORLDS_DIR — generated worlds are off');
+let files = [];
+try { files = fs.readdirSync(dir).filter(f => /^world-[^.]+\.json\$/.test(f)); }
+catch (e) { return console.log('    shelf unreadable at ' + dir + ' (' + e.message + ')'); }
+const revs = fs.existsSync(dir + '/revisions') ? fs.readdirSync(dir + '/revisions').length : 0;
+console.log(files.length
+  ? '    shelf OK, ' + files.length + ' cartridge(s), ' + revs + ' revision file(s)'
+  : '    shelf is EMPTY — set BOH_SEED_WORLDS in .env, or bake cartridges into the boh-worlds volume');
+" 2>/dev/null || echo "    WARNING: could not read the world shelf"
+
+# The browser pages, when the surface is switched on. Static assets only, so
+# this asks one question: does the atlas page come back? A 404 here means the
+# client package in the image shipped without examples/, which is invisible
+# from the MCP side and looks like a proxy fault from the outside.
+echo "    checking the UI surface..."
+dc exec -T mcp node -e "
+const port = process.env.BOH_UI_PORT;
+if (!port) return console.log('    BOH_UI_PORT unset — browser pages are off');
+const base = 'http://127.0.0.1:' + port + (process.env.BOH_UI_BASE_PATH || '');
+Promise.all(['/', '/atlas'].map(p =>
+  fetch(base + p, { signal: AbortSignal.timeout(5000) })
+    .then(r => '    ' + (p === '/' ? 'home' : 'atlas') + ': HTTP ' + r.status + (r.ok ? '' : ' — NOT ok'))
+    .catch(e => '    ' + p + ': unreachable (' + e.message + ')')
+)).then(lines => { lines.forEach(l => console.log(l)); process.exit(0); });
+" 2>/dev/null || echo "    WARNING: could not probe the UI surface"
+
 # Semantic search: reachable sidecars mean hybrid retrieval; unreachable means
 # lexical. Report which one this deploy actually landed on.
 echo "    checking the semantic sidecars..."

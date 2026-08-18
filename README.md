@@ -121,7 +121,7 @@ runs as a deployed HTTP service, so the campaign lives on the server and any
 client can reach it:
 
 ```bash
-docker compose up -d     # mcp + qdrant + embeddings
+docker compose up -d     # mcp (+ its UI port), worlds-seed, qdrant, embeddings
 ```
 
 The MCP surface is `POST /mcp/<token>` with an open `GET /health`. The token
@@ -136,6 +136,21 @@ The HTTP entrypoint refuses to start without `BOH_MEMORY_TOKEN_HASHES`, so a
 half-configured deploy fails closed instead of serving every campaign to
 whoever finds the URL. Full walkthrough for the nginx-proxy-manager + CI
 deployment: **[docs/deployment.md](docs/deployment.md)**.
+
+Two more things come up with the stack:
+
+- **A world shelf.** `worlds-seed` bakes the seeds named in `BOH_SEED_WORLDS`
+  into a volume once — skipping anything already there, because campaigns pin
+  a cartridge by digest — and the server mounts it read-only at
+  `BOH_WORLDS_DIR`. That is what makes `world_catalog` → `world_begin` answer
+  with something. It is read once at start, so a cartridge added later needs
+  `docker compose restart mcp`.
+- **The browser pages**, on port 8099: the client home at `/` and the World
+  Atlas at `/atlas`, served straight out of the installed
+  `@zeeuw/bag-of-holding-client`. No auth, because there is nothing to
+  protect — static files, no token, no store, no shelf; the pages bake a
+  world in the browser. Rendering a REAL campaign is the host's job, through
+  its own authenticated proxy calling `world_atlas`.
 
 ### Storage, tokens and the hosted mode
 

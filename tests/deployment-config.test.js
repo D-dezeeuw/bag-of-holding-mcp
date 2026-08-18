@@ -21,7 +21,7 @@ test('every container name carries the project prefix, so the deploy sweep reach
   // another compose project. A container outside that prefix is invisible to
   // the single-instance guarantee.
   assert.equal(projectName, 'bag-of-holding-mcp');
-  assert.equal(containerNames.length, 3);
+  assert.equal(containerNames.length, 4);
   for (const name of containerNames) {
     assert.ok(name.startsWith(`${projectName}-`), `${name} must start with ${projectName}-`);
   }
@@ -160,4 +160,65 @@ test('every mounted volume path exists in the image, owned by the runtime user',
     assert.ok(created.includes(mount), `${mount} is mounted but never created in the image`);
     assert.ok(owned.includes(mount), `${mount} is created but not chowned to boh`);
   }
+});
+
+
+test('the world shelf has exactly one writer', () => {
+  // Same single-writer split as the tenant registry, and load-bearing for a
+  // different reason: a campaign pins a cartridge by DIGEST, so a second
+  // process able to rewrite one would strand every campaign playing it. The
+  // seeder mounts the volume read-write; everything else takes `:ro`.
+  const mounts = [...compose.matchAll(/^\s*-\s*boh-worlds:\/worlds(:ro)?\s*$/gm)];
+  assert.equal(mounts.length, 2, 'expected the mcp mount and the seeder mount');
+  const writable = mounts.filter((m) => !m[1]);
+  assert.equal(writable.length, 1, 'exactly one service may write the shelf');
+
+  const seedBlock = compose.slice(compose.indexOf('\n  worlds-seed:'), compose.indexOf('\n  qdrant:'));
+  assert.match(seedBlock, /-\s*boh-worlds:\/worlds\s*$/m, 'the writer must be worlds-seed');
+  const mcpBlock = compose.slice(compose.indexOf('\n  mcp:'), compose.indexOf('\n  worlds-seed:'));
+  assert.match(mcpBlock, /-\s*boh-worlds:\/worlds:ro/, 'the server reads the shelf, never writes it');
+});
+
+test('the shelf is filled before the server reads it', () => {
+  // createWorlds reads the directory ONCE, at boot, and never again — so
+  // plain start-ordering is not enough, the seeder must have EXITED. If this
+  // gate is ever downgraded to `service_started`, a fresh deploy races and
+  // the catalog comes up empty on the first boot after a volume reset.
+  assert.match(compose, /worlds-seed:\n\s*condition: service_completed_successfully/);
+  const seedBlock = compose.slice(compose.indexOf('\n  worlds-seed:'), compose.indexOf('\n  qdrant:'));
+  assert.match(seedBlock, /restart: "no"/, 'the seeder is a one-shot, not a service');
+  assert.match(seedBlock, /entrypoint: \["node", "scripts\/seed-worlds\.js"\]/);
+});
+
+test('the seeder runs the same image as the server', () => {
+  // Two `build:` stanzas for one Dockerfile means two images and a window
+  // where the seeder and the server disagree about what the client library
+  // contains — including whether a cartridge bakes to the same digest.
+  const tags = [...compose.matchAll(/^\s*image:\s*(bag-of-holding-mcp:\S+)$/gm)].map((m) => m[1]);
+  assert.equal(tags.length, 2);
+  assert.equal(tags[0], tags[1]);
+});
+
+test('the shelf volume is declared, and the worlds dir may default', () => {
+  assert.match(compose.slice(compose.lastIndexOf('\nvolumes:')), /^\s{2}boh-worlds:/m);
+  // `:-` not `:?`: a server with no shelf is a valid deployment and
+  // world_catalog answers cleanly for one.
+  assert.match(compose, /BOH_WORLDS_DIR:\s*\$\{BOH_WORLDS_DIR:-/);
+});
+
+test('the UI port is reached through the proxy network like everything else', () => {
+  // The `no service publishes a port` test above already covers this, but
+  // state the intent for the port that is deliberately unauthenticated: it
+  // must not become the one thing bound to the host's interfaces.
+  assert.match(compose, /BOH_UI_PORT:\s*"8099"/);
+  assert.match(dockerfile, /^EXPOSE 8091 8099$/m, 'both surfaces are declared in the image');
+  assert.doesNotMatch(compose, /^\s*ports:/m);
+});
+
+test('the operator scripts reach the image that is meant to run them', () => {
+  // seed-worlds.js runs as the compose one-shot and publish-revision.js is
+  // the only supported way to add a revision. The COPY list is an allowlist,
+  // so both were absent until it named scripts/ — unreachable in the exact
+  // place they exist to run.
+  assert.match(dockerfile, /^COPY scripts\/ \.\/scripts\/$/m);
 });
