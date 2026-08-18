@@ -110,6 +110,18 @@ export function worldsTools(worlds, playthroughs, pinnedToken) {
       }
     },
     {
+      name: 'world_atlas',
+      description: 'The campaign\'s world as a MAP the table can look at — the feed behind the atlas views (world map, power graph, dynasty tree) in a host or admin page. Returns the pinned world\'s geography, powers, wars and crowns narrowed to WHAT THIS CAMPAIGN HAS FOUND: nodes the party observed (walked into via world_node, or wrote a patch about), plus the landing the pin froze at begin, plus whatever the ledger discovered outright; the landmass under a known province comes with it, and a route appears once both its ends are known. The campaign\'s own ledger is folded first, so a province the table renamed shows its new name. Everything else is DELETED, not dimmed — undiscovered places, the routes touching them, powers holding no known ground, and every gm-only field are absent from the response, so this is safe to render on a screen the players can see. There is no gm option here on purpose: the spoiler view of a world comes from its cartridge, or from world_export at edition "gm", away from the table. Refuses when the campaign has never called world_begin.',
+      input: { ...tokenField, campaign: CampaignField },
+      handler: async (args) => {
+        try {
+          const out = playthroughs.atlas(tokenOf(args), args.campaign);
+          return out ? toolResult(out)
+            : toolError(new Error(`campaign "${args.campaign}" has no world; call world_begin first`));
+        } catch (err) { return toolError(err); }
+      }
+    },
+    {
       name: 'world_export',
       description: 'The world book: one cartridge (at a revision) carved into an EPUB and returned base64-encoded. Two cuts: "player" is safe to hand across the table — geography, legends as stories, crowns as public fact, the powers and their wars as tavern talk; "gm" adds the table secrets (a legend\'s kernel of truth and payoff, a crown\'s stance on the threat, an npc\'s wants, each land\'s menace). NEVER share the gm cut with players. The book is coverless (server-side rendering has no canvas), byte-deterministic, and ends in a colophon carrying { worldId, revision, digest } so book and campaign can be proven to agree.',
       input: {

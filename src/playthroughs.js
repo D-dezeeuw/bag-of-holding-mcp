@@ -20,7 +20,7 @@
 
 import {
   makePatch, appendPatch, fold, isValidId,
-  classifyRevision, revisionConflicts,
+  classifyRevision, revisionConflicts, playerCut,
 } from '@zeeuw/bag-of-holding-client';
 
 // The engine's ledger id grammar (kind.name segments) is one convention;
@@ -235,6 +235,109 @@ export function createPlaythroughs(worlds, store) {
       return {
         ok: true, campaign, from, to: toRevision, digest: target.digest,
         adds: adds.length, edits: edits.length, dryRun,
+      };
+    },
+
+    /**
+     * The campaign's world AS THE TABLE KNOWS IT — the payload behind the
+     * live atlas view.
+     *
+     * There is no `edition` parameter and that is deliberate. This tool is
+     * reachable by a model that may be rendering onto a screen the players
+     * are looking at, so the only cut it can produce is the player cut. The
+     * GM's spoiler view of a world comes from the cartridge itself (or from
+     * world_export's gm edition), off to one side of the table.
+     *
+     * Three layers compose, in this order:
+     *
+     *   1. the pinned revision's baked geography — the world as published;
+     *   2. the campaign's own ledger, folded per node, so a province the
+     *      table renamed or burned appears renamed or burned;
+     *   3. discovery, which is what makes this a PLAYER map: a node counts
+     *      as found when the campaign has observed it (walked in through
+     *      world_node, or written a patch about it), when the ledger says
+     *      so outright, or when it is the landing the pin froze at begin.
+     *      Standing on a province reveals the landmass under it; an edge
+     *      appears once both of its ends are known.
+     *
+     * Then playerCut DELETES everything else — undiscovered nodes, the
+     * edges touching them, the powers that hold no known ground, and the
+     * gm-only fields of what remains. A secret that never leaves the
+     * server cannot leak through a stylesheet.
+     *
+     * `worldShape` survives the cut on purpose: it is a COUNT of the
+     * world's landmasses and nothing more. Without it, a fogged map would
+     * re-ring itself every time the party sighted a new coast — the atlas
+     * would redraw the world rather than fill it in.
+     */
+    atlas(token, campaign) {
+      const pin = store.worldPin(token, campaign);
+      if (!pin) return null;
+      const revision = pin.revision ?? 0;
+      const at = worlds.resolve(pin.worldId, revision);
+      if (!at) {
+        throw new Error(`campaign "${campaign}" is pinned to '${pin.worldId}' revision ${revision}, which this shelf can no longer resolve`);
+      }
+      const data = at.data;
+      const baseGeo = data.geo ?? { nodes: {}, edges: [] };
+
+      // Layer 2 — the table's canon over the published world. Only nodes
+      // the ledger actually names are folded; the rest are copied as baked.
+      const patches = store.worldLedger(token, campaign).patches;
+      const touched = new Set(patches.map((p) => p.target));
+      const nodes = {};
+      for (const [id, node] of Object.entries(baseGeo.nodes)) {
+        if (!touched.has(id)) { nodes[id] = { ...node }; continue; }
+        const folded = fold(worlds.cell(pin.worldId, id, revision) ?? {}, patches, id);
+        nodes[id] = { ...node, ...(folded?.node ?? {}) };
+      }
+
+      // Layer 3 — discovery. The observation set is the authority (it is
+      // what world_node writes when the party is THERE), the folded node
+      // flag is honoured too, and the pin's landing counts from turn zero:
+      // a campaign that has begun is standing somewhere.
+      const found = new Set(Object.keys(store.worldObserved(token, campaign)));
+      if (pin.start) found.add(pin.start);
+      for (const [id, node] of Object.entries(nodes)) {
+        if (found.has(id) || node.discovered === true) found.add(id);
+      }
+      // Standing on a province reveals the landmass under it.
+      for (const id of [...found]) {
+        const parent = nodes[id]?.parent;
+        if (parent && nodes[parent]) found.add(parent);
+      }
+      for (const id of found) {
+        if (nodes[id]) nodes[id] = { ...nodes[id], discovered: true };
+      }
+      const edges = (baseGeo.edges ?? []).map((e) => ({
+        ...e, discovered: found.has(e.from) && found.has(e.to),
+      }));
+
+      const cut = playerCut({
+        seed: data.seed ?? null,
+        settingId: data.settingId ?? null,
+        geo: { ...baseGeo, nodes, edges },
+        factions: data.factions ?? [],
+        npcs: data.npcs ?? [],
+        warState: data.warState ?? null,
+        lore: data.lore ?? {},
+        edition: 'player',
+      });
+
+      return {
+        ...cut,
+        campaign,
+        worldId: pin.worldId,
+        revision,
+        digest: at.digest,
+        start: pin.start ?? null,
+        counts: {
+          continents: Object.values(cut.geo.nodes).filter((n) => n.kind === 'continent').length,
+          provinces: Object.values(cut.geo.nodes).filter((n) => n.kind === 'province').length,
+          links: cut.geo.edges.length,
+          powers: cut.factions.length,
+          wars: cut.warState?.wars?.length ?? 0,
+        },
       };
     },
 

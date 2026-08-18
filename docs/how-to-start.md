@@ -43,7 +43,7 @@ Add the server to `claude_desktop_config.json` (macOS:
 ```
 
 Restart the host. You should see the bag-of-holding tools appear
-(107 of them), plus a prompt per guide — start with
+(108 of them), plus a prompt per guide — start with
 `campaign-quickstart`; `session-recap` and `run-combat` cover the
 two most common rituals.
 
