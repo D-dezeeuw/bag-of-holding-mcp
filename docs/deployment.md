@@ -245,6 +245,28 @@ Three things about this deployment specifically:
    deliberate — the credential is the token in the URL, not a cookie, so there
    is no ambient authority an origin check would protect.
 
+## The JEFF decision layer (optional)
+
+`memory_record` can ask a [JEFF](jeff-decisions.md) instance to judge how
+important a memory is. The compose file passes four variables through from
+`.env`, all as `${VAR:-}`, so the feature is switched purely by `.env` plus a
+redeploy of the app container:
+
+| Variable | Meaning |
+| --- | --- |
+| `BOH_JEFF_URL` | JEFF base URL, https (plain http only to loopback). Empty = off. |
+| `BOH_JEFF_KEY` | A JEFF caller key minted for this server. Empty = off. |
+| `BOH_JEFF_MODE` | `shadow` (default): ask and log, change nothing. `on`: apply the judgment. |
+| `BOH_JEFF_TIMEOUT_MS` | Per-request timeout, default 4000. |
+
+Empty URL or key means no JEFF code path runs and no request is made; results
+are byte-identical to a deployment without the feature. With it on, every
+failure (timeout, network error, 401 from a key JEFF does not know yet, a
+malformed answer) fails open to the unjudged behaviour and logs one JSON line
+on stderr prefixed `{"jeff":true`. Watch for those with
+`docker logs bag-of-holding-mcp-server 2>&1 | grep '"jeff":true'` while in shadow
+mode before switching to `on`.
+
 ## Operating it
 
 `docker/deploy.sh` stops and recreates services on every deploy, except

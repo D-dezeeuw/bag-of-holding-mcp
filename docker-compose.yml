@@ -98,6 +98,17 @@ services:
       # misconfiguration that must fail loudly rather than half-work.
       # BOH_LLM_API_KEY: ${BOH_LLM_API_KEY:?set it in .env to sell inference to tenants}
       BOH_LLM_TIER: ${BOH_LLM_TIER:-free}
+      # JEFF decision layer (docs/jeff-decisions.md): memory_record asks JEFF
+      # how important a memory is. `:-` and not `:?`, unlike the keys above:
+      # the app treats an empty BOH_JEFF_URL or BOH_JEFF_KEY exactly like an
+      # absent one (off, no request made), so passing them through always is
+      # safe and lets .env alone switch the feature. MODE shadow (the default)
+      # only logs what JEFF would have changed; `on` applies it. Any JEFF
+      # failure fails open.
+      BOH_JEFF_URL: ${BOH_JEFF_URL:-}
+      BOH_JEFF_KEY: ${BOH_JEFF_KEY:-}
+      BOH_JEFF_MODE: ${BOH_JEFF_MODE:-}
+      BOH_JEFF_TIMEOUT_MS: ${BOH_JEFF_TIMEOUT_MS:-}
       # BOH_QDRANT_API_KEY is intentionally absent — see the qdrant service.
       # Uncomment BOTH lines together if you ever enable the key.
       # BOH_QDRANT_API_KEY: ${QDRANT_API_KEY}

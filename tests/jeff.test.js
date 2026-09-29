@@ -91,6 +91,17 @@ test('resolveJeffConfig: off unless both URL and key are set', () => {
   assert.equal(resolveJeffConfig({ BOH_JEFF_URL: 'https://jeff.example', BOH_JEFF_KEY: '  ' }), null);
 });
 
+test('resolveJeffConfig: the compose pass-through shape (every variable defined, empty) is off', () => {
+  // docker-compose.yml passes all four as `${BOH_JEFF_…:-}`, so an .env that
+  // never mentions JEFF still hands the container four empty strings.
+  const empty = { BOH_JEFF_URL: '', BOH_JEFF_KEY: '', BOH_JEFF_MODE: '', BOH_JEFF_TIMEOUT_MS: '' };
+  assert.equal(resolveJeffConfig(empty), null);
+  // And with only URL + key filled in, the empty mode and timeout fall back to their defaults.
+  const cfg = resolveJeffConfig({ ...empty, BOH_JEFF_URL: 'https://jeff.example', BOH_JEFF_KEY: 'k' });
+  assert.equal(cfg.mode, 'shadow');
+  assert.equal(cfg.timeoutMs, DEFAULT_JEFF_TIMEOUT_MS);
+});
+
 test('resolveJeffConfig: https anywhere, plain http only to loopback, junk URLs off', () => {
   assert.equal(resolveJeffConfig({ BOH_JEFF_URL: 'http://jeff.example', BOH_JEFF_KEY: 'k' }), null);
   assert.equal(resolveJeffConfig({ BOH_JEFF_URL: 'not a url', BOH_JEFF_KEY: 'k' }), null);
