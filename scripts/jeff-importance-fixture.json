@@ -1,0 +1,25 @@
+{
+  "_note": "memory_record inputs with the importance (1-5) the memory-protocol guide implies. Used by scripts/jeff-importance-bench.js (docs/jeff-decisions.md).",
+  "cases": [
+    { "type": "note", "text": "The inn at Mossford served a thin barley stew and the fire smoked.", "expect": 1 },
+    { "type": "place", "text": "The road from Mossford to the ferry runs along a willow-lined dyke.", "expect": 1 },
+    { "type": "note", "text": "Brakka complained about the rain for most of the afternoon.", "expect": 1 },
+    { "type": "item", "text": "The party bought two torches and a coil of rope in Mossford.", "expect": 1 },
+    { "type": "npc", "text": "Old Hedda runs the ferry across the Grey Water and charges two copper a head.", "expect": 2 },
+    { "type": "place", "text": "The Lantern Court is a covered market in Greyfen where smugglers trade after dark.", "expect": 3 },
+    { "type": "npc", "text": "Tally, a smuggler kid of about twelve, sold the party a map of the old sluice tunnels.", "expect": 3 },
+    { "type": "event", "text": "The party fought off three bog hounds at the sluice gate; Brakka was badly hurt.", "expect": 2 },
+    { "type": "lore", "text": "Clerics in the March draw power from relics of the dead gods rather than from prayer.", "expect": 3 },
+    { "type": "item", "text": "The party found a silver lantern engraved with the sigil of House Veyle.", "expect": 3 },
+    { "type": "event", "text": "The party promised the miller Aldric they would bring his daughter Mira home before the spring flood.", "expect": 4 },
+    { "type": "event", "text": "Sera owes the smuggler Maela forty gold and must repay it by the next new moon.", "expect": 4 },
+    { "type": "faction", "text": "The Dyke Wardens now consider the party enemies after the party sabotaged the eastern sluice.", "expect": 4 },
+    { "type": "event", "text": "Captain Orsk betrayed the party to the Wardens and fled with the relic shard.", "expect": 4 },
+    { "type": "npc", "text": "Brother Callan died holding the bridge so the party could escape.", "expect": 4 },
+    { "type": "quest", "text": "The party agreed to find the missing tax ledger for the reeve of Mossford.", "expect": 3 },
+    { "type": "session-summary", "text": "Session 4: the party crossed the Grey Water, met Tally, bought the sluice map and fought bog hounds. Brakka is wounded. The promise to Aldric still stands and the flood is nine days away.", "expect": 4 },
+    { "type": "lore", "text": "The Drowned Abbot, the power behind the Wardens, is revealed to be the party's missing mentor.", "expect": 5 },
+    { "type": "event", "text": "The great dyke broke and the whole eastern March flooded; Mossford is gone.", "expect": 5 },
+    { "type": "quest", "text": "The party swore to restore the last dead god, the central goal of the campaign.", "expect": 5 }
+  ]
+}
