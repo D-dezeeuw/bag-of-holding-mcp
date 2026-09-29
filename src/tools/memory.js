@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { toolResult, toolError } from '../_result.js';
 import { MEMORY_TYPES } from '../memory/store.js';
 import { tenantFields } from './_tenant.js';
+import { judgeImportance } from '../jeff.js';
 
 const CampaignField = z.string().describe(
   'Campaign name, e.g. "curse-of-the-fen". 1-64 chars of A-Za-z0-9_- (it becomes a folder name). Use one campaign name per table and stick to it.'
@@ -45,8 +46,11 @@ const TypeField = z.enum(MEMORY_TYPES).describe(
  * @param pinnedToken   when set, the tenant is fixed by the
  *                      transport: `token` vanishes from every input
  *                      schema and this value is used instead.
+ * @param jeff          the optional JEFF client (src/jeff.js), or null.
+ *                      Only `memory_record` uses it, and only when the
+ *                      host left `importance` out — see recordWithJeff.
  */
-export function memoryTools(store, pinnedToken) {
+export function memoryTools(store, pinnedToken, jeff = null) {
   // Tenancy plumbing shared with the image and world tools — see _tenant.js
   // for why the field vanishes entirely when the transport pins the token.
   const { tokenField, tokenOf } = tenantFields(pinnedToken);
@@ -77,7 +81,11 @@ export function memoryTools(store, pinnedToken) {
       handler: async (args) => {
         try {
           const { campaign, type, text, entities, tags, importance } = args;
-          return toolResult(store.record(tokenOf(args), campaign, { type, text, entities, tags, importance }));
+          const token = tokenOf(args);
+          if (jeff && importance === undefined && store.isAuthorized(token)) {
+            return toolResult(await recordWithJeff(jeff, store, token, campaign, { type, text, entities, tags }));
+          }
+          return toolResult(store.record(token, campaign, { type, text, entities, tags, importance }));
         } catch (err) { return toolError(err); }
       }
     },
@@ -214,4 +222,36 @@ export function memoryTools(store, pinnedToken) {
       }
     }
   ];
+}
+
+/**
+ * `memory_record` with no host-given importance, JEFF configured.
+ *
+ * The store keeps `importance` only when one was given and ranks a missing one
+ * as 3 — so a host that never fills the field flattens one of the search's
+ * three signals. JEFF places the record on the same 1-5 scale:
+ *
+ *   • shadow (default): record exactly as without JEFF, then ask in the
+ *     background and log what "on" would have stored. The result is
+ *     identical and the record never waits.
+ *   • on: ask first (bounded by the client timeout), store the judged
+ *     importance, and say so in `importanceJudged`. No answer, or too little
+ *     confidence, stores the record exactly as without JEFF.
+ *
+ * Only the record's type and text (clipped) leave the server; the log line
+ * carries numbers, never text.
+ */
+async function recordWithJeff(jeff, store, token, campaign, input) {
+  if (jeff.mode !== 'on') {
+    const rec = store.record(token, campaign, input);
+    judgeImportance(jeff, input.type, input.text).then((j) => {
+      if (j) jeff.log({ feature: 'memory_importance', mode: 'shadow', would_store: j.importance, score: j.score, confidence: j.confidence, type: input.type });
+    });
+    return rec;
+  }
+  const j = await judgeImportance(jeff, input.type, input.text);
+  if (!j) return store.record(token, campaign, input);
+  const rec = store.record(token, campaign, { ...input, importance: j.importance });
+  jeff.log({ feature: 'memory_importance', mode: 'on', stored: j.importance, score: j.score, confidence: j.confidence, type: input.type });
+  return { ...rec, importanceJudged: { by: 'jeff', score: j.score, confidence: j.confidence } };
 }

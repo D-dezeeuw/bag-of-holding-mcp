@@ -37,6 +37,7 @@ import {
   resolveRelayConfig, relayTierFor, planCompletion, modelsPayload, statusPayload,
   budgetForTier, chargeCall, usageTokens, RELAY_TIMEOUT_MS,
 } from './relay.js';
+import { resolveJeffConfig, createJeffClient } from './jeff.js';
 
 const SERVER_VERSION = createRequire(import.meta.url)('../package.json').version;
 
@@ -131,6 +132,9 @@ export function createHttpHandler(opts = {}) {
   // environment per request would let a mid-flight edit serve two policies.
   const relayConfig = opts.relayConfig ?? resolveRelayConfig(env);
   const relayFetch = opts.relayFetch ?? fetch;
+  // The optional JEFF client, resolved once for the same reason: null unless
+  // BOH_JEFF_URL + BOH_JEFF_KEY are set, and then no JEFF code runs at all.
+  const jeff = opts.jeff !== undefined ? opts.jeff : createJeffClient(resolveJeffConfig(env));
 
   /**
    * Extract the token from `/mcp/<token>`. Returns null for any
@@ -391,7 +395,8 @@ export function createHttpHandler(opts = {}) {
       sessions: sessionsFor(token),
       memoryStore: store,
       memoryToken: token,
-      worlds
+      worlds,
+      jeff
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     // Tie both to the response: stateless means this pair exists

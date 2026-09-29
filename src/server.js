@@ -46,6 +46,7 @@ import { guideTools } from './tools/guides.js';
 import { soloTools } from './tools/solo.js';
 import { narrationTools } from './tools/narration.js';
 import { imageTools } from './tools/images.js';
+import { resolveJeffConfig, createJeffClient } from './jeff.js';
 
 const SERVER_NAME = 'bag-of-holding';
 // The version every MCP handshake advertises. Read from package.json
@@ -67,7 +68,8 @@ const SERVER_VERSION = createRequire(import.meta.url)('../package.json').version
  *   memory?: import('../index.js').MemoryStoreOptions,
  *   memoryStore?: ReturnType<typeof createMemoryStore>,
  *   memoryToken?: string,
- *   images?: { env?: Record<string, string|undefined>, now?: () => number, render?: Function }
+ *   images?: { env?: Record<string, string|undefined>, now?: () => number, render?: Function },
+ *   jeff?: ReturnType<typeof createJeffClient>
  * }} [opts]
  *   `sessions` injects a shared session registry (rare — usually
  *   you want the default fresh one). `memory` configures the disk
@@ -89,6 +91,10 @@ const SERVER_VERSION = createRequire(import.meta.url)('../package.json').version
  *   back a grant for the client to render — while `now` and
  *   `render` exist so tests can drive the budget clock and the
  *   provider without either.
+ *   `jeff` injects the optional JEFF decision-layer client (see
+ *   src/jeff.js and docs/jeff-decisions.md); omitted, it is built from
+ *   BOH_JEFF_URL / BOH_JEFF_KEY / BOH_JEFF_MODE, and with those unset it
+ *   is null and no JEFF code runs. Pass `null` to force it off.
  */
 export function createServer(opts = {}) {
   const sessions = opts.sessions ?? createSessions();
@@ -97,6 +103,10 @@ export function createServer(opts = {}) {
   // Playthroughs bind campaigns to worlds THROUGH the memory store, so they
   // are as persistent and as tenant-scoped as the memory log itself.
   const playthroughs = createPlaythroughs(worlds, memory);
+  // The optional JEFF decision layer: null unless BOH_JEFF_URL + BOH_JEFF_KEY
+  // are set (or a client is injected), and every JEFF path is skipped on null.
+  // `jeff: null` forces it off whatever the environment says.
+  const jeff = opts.jeff !== undefined ? opts.jeff : createJeffClient(resolveJeffConfig(process.env));
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
   const allTools = [
@@ -114,7 +124,7 @@ export function createServer(opts = {}) {
     ...spellsTools(sessions),
     ...monsterTools(sessions),
     ...restTools(sessions),
-    ...memoryTools(memory, opts.memoryToken),
+    ...memoryTools(memory, opts.memoryToken, jeff),
     ...campaignTools(memory, opts.memoryToken),
     ...imageTools(memory, opts.memoryToken, opts.images ?? {}),
     ...worldTools(),
@@ -157,5 +167,5 @@ export function createServer(opts = {}) {
       return json(uri, { lineage: out });
     });
 
-  return { server, sessions, memory, worlds, playthroughs, tools: allTools };
+  return { server, sessions, memory, worlds, playthroughs, jeff, tools: allTools };
 }

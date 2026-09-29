@@ -425,6 +425,44 @@ export function renderImage(
 export function createMemoryStore(opts?: MemoryStoreOptions): MemoryStore;
 
 // ============================================================
+// JEFF decision layer (optional; docs/jeff-decisions.md)
+// ============================================================
+
+/** JEFF configuration, or null when JEFF is off (the default). */
+export interface JeffConfig {
+  url: string;
+  key: string;
+  /** "shadow" (default): ask and log only. "on": answers may change results. */
+  mode: 'shadow' | 'on';
+  timeoutMs: number;
+}
+
+/**
+ * Read BOH_JEFF_URL / BOH_JEFF_KEY / BOH_JEFF_MODE / BOH_JEFF_TIMEOUT_MS.
+ * Null unless both URL and key are set and the URL is https (or http to
+ * loopback) — and null means no JEFF code runs and no request is made.
+ */
+export function resolveJeffConfig(env?: Record<string, string | undefined>): JeffConfig | null;
+
+/** The fail-open JEFF client. `decide` never rejects: a failure resolves to null. */
+export interface JeffClient {
+  mode: 'shadow' | 'on';
+  decide(args: {
+    feature: string;
+    family?: string;
+    state: unknown;
+    questions: Record<string, Record<string, unknown>>;
+  }): Promise<Record<string, any> | null>;
+  log(entry: Record<string, unknown>): void;
+}
+
+/** Build a client for a config; null in, null out. */
+export function createJeffClient(
+  config: JeffConfig | null,
+  opts?: { fetchImpl?: typeof fetch; log?: (entry: Record<string, unknown>) => void }
+): JeffClient | null;
+
+// ============================================================
 // World packs
 // ============================================================
 
@@ -647,12 +685,18 @@ export function createServer(opts?: {
   };
   worlds?: WorldRegistry;
   worldsDir?: string | null;
+  /**
+   * The optional JEFF client. Omitted: built from BOH_JEFF_* (null when
+   * unset). `null` forces JEFF off whatever the environment says.
+   */
+  jeff?: JeffClient | null;
 }): {
   server: McpServer;
   sessions: SessionRegistry;
   memory: MemoryStore;
   worlds: WorldRegistry;
   playthroughs: Playthroughs;
+  jeff: JeffClient | null;
   tools: ToolDescriptor[];
 };
 
@@ -686,6 +730,11 @@ export interface HttpOptions {
   now?: () => number;
   relayConfig?: RelayConfig | null;
   relayFetch?: typeof fetch;
+  /**
+   * The optional JEFF client, shared by every request. Omitted: built once
+   * from BOH_JEFF_* in `env` (null when unset). `null` forces JEFF off.
+   */
+  jeff?: JeffClient | null;
 }
 
 /**
