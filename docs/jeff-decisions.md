@@ -229,8 +229,9 @@ unless `BOH_JEFF_OUTCOMES=0`.
 **The body, the whole of it:**
 
 ```json
-{"request_id": "req_01K…", "question": "importance", "outcome": "label", "label": 3}
-{"request_id": "req_01K…", "question": "tool",       "outcome": "label", "label": "srd_get"}
+{"request_id": "req_01K…", "question": "importance", "outcome": "label", "label": 3, "source": "host_override"}
+{"request_id": "req_01K…", "question": "importance", "outcome": "label", "label": 3, "source": "shadow_pair"}
+{"request_id": "req_01K…", "question": "tool",       "outcome": "label", "label": "srd_get", "source": "next_call"}
 ```
 
 `request_id` is the `id` JEFF returned for the decision, `question` the
@@ -239,6 +240,19 @@ question key the decision asked. An importance label is a **level index**
 label. A tool label is the catalogue key. No `notes`, no record or request
 text, no campaign, namespace, tenant token or record id. The bearer key is
 the same as for decisions.
+
+**`source` (since 0.24.0).** Each outcome says who knew the label, using
+JEFF's enum (its D-099): `host_override` when the host re-recorded a record
+JEFF had judged, `shadow_pair` when the host's own importance labels the
+background judgment of that same call, `next_call` for the tool called after
+`route_request`. JEFF's fitter can then weigh them apart: an override or a
+shadow pair is the host stating the answer, a next call is only inferred
+(JEFF's calibration leaves `next_call` out of its fits by default). A JEFF
+older than D-099 refuses unknown fields with a 422; when a 422 body mentions
+`source`, that post is sent once more without the field, and every later
+post in the process leaves it out. That switch writes one log line
+(`{"feature":"outcome","outcome":"source_unsupported",…}`) and nothing else
+changes. A restart tries the field again.
 
 **When an importance label is posted:**
 

@@ -24,7 +24,7 @@
 //   • Say little. Each feature sends only the text its question is about,
 //     clipped; never a token, a namespace, a campaign name or a record id.
 //     An outcome (POST /v1/outcomes, since 0.23.0) carries only JEFF's own
-//     decision id, the question key and the observed label.
+//     decision id, the question key, the observed label and its source.
 //
 // No dependency: the platform fetch, like the embeddings and Qdrant clients.
 
@@ -169,7 +169,7 @@ export function decisionId(response) {
 // Outcomes: what happened after a decision (JEFF POST /v1/outcomes).
 //
 // JEFF joins an outcome to its decision by id and fits calibration on the
-// `label` outcomes. Two sources, wired in src/tools/memory.js and
+// `label` outcomes. Two kinds, wired in src/tools/memory.js and
 // src/tools/route.js:
 //
 //   • importance — the host's explicit importance for a record JEFF judged
@@ -182,8 +182,14 @@ export function decisionId(response) {
 // Every post is fire-and-forget: never awaited by a tool, bounded by the
 // client timeout, at most OUTCOME_MAX_IN_FLIGHT at once, not retried, and any
 // failure is one log line. The body is
-// { request_id, question, outcome: "label", label } and nothing else: no
-// text, no campaign, no namespace, no token.
+// { request_id, question, outcome: "label", label, source } and nothing else:
+// no text, no campaign, no namespace, no token. `source` (0.24.0, JEFF D-099)
+// says who knew the label: `host_override` (the host re-recorded a judged
+// record), `shadow_pair` (the host's own value for a record judged in the
+// background) or `next_call` (the tool called after route_request). A JEFF
+// older than D-099 answers 422 to the field; the post is then sent once more
+// without it, and every later post in this process leaves it out (one log
+// line when that happens).
 // ---------------------------------------------------------------------------
 
 /**
@@ -200,6 +206,21 @@ export function createOutcomeReporter(config, { fetchImpl, log, now = Date.now }
 
   function safeLog(entry) { try { log(entry); } catch { /* never breaks a call */ } }
 
+  /**
+   * Whether this JEFF accepts `source` (D-099). Assumed yes until a 422 names
+   * the field; then every later post in this process leaves it out.
+   */
+  let sendSource = true;
+
+  function send(body, signal) {
+    return fetchImpl(`${config.url}/v1/outcomes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${config.key}` },
+      body: JSON.stringify(body),
+      signal,
+    });
+  }
+
   function post(body) {
     if (inFlight >= OUTCOME_MAX_IN_FLIGHT) {
       safeLog({ feature: 'outcome', question: body.question, outcome: 'skipped', reason: 'in_flight' });
@@ -210,13 +231,19 @@ export function createOutcomeReporter(config, { fetchImpl, log, now = Date.now }
     const timer = setTimeout(() => ctl.abort(), config.timeoutMs);
     const p = (async () => {
       try {
-        const res = await fetchImpl(`${config.url}/v1/outcomes`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${config.key}` },
-          body: JSON.stringify(body),
-          signal: ctl.signal,
-        });
-        try { await res.text(); } catch { /* the body is not needed */ }
+        const { source, ...bare } = body;
+        let res = await send(sendSource ? body : bare, ctl.signal);
+        let text = '';
+        try { text = await res.text(); } catch { /* the body is only read for the 422 check */ }
+        // A JEFF older than D-099 refuses the field it does not know (422,
+        // issues[].path "source"): send it once more without the field, and
+        // leave it out from then on.
+        if (res.status === 422 && sendSource && text.includes('source')) {
+          sendSource = false;
+          safeLog({ feature: 'outcome', outcome: 'source_unsupported', reason: 'JEFF refused the source field (422); outcomes are sent without it from now on' });
+          res = await send(bare, ctl.signal);
+          try { await res.text(); } catch { /* the body is not needed */ }
+        }
         safeLog({ feature: 'outcome', question: body.question, label: body.label, status: res.status });
       } catch {
         safeLog({ feature: 'outcome', question: body.question, outcome: 'failed_open', reason: ctl.signal.aborted ? 'timeout' : 'network' });
@@ -230,9 +257,9 @@ export function createOutcomeReporter(config, { fetchImpl, log, now = Date.now }
     return true;
   }
 
-  function label(id, question, value) {
+  function label(id, question, value, source) {
     if (typeof id !== 'string' || !JEFF_REQUEST_ID_RE.test(id)) return false;
-    return post({ request_id: id, question, outcome: 'label', label: value });
+    return post({ request_id: id, question, outcome: 'label', label: value, source });
   }
 
   return {
@@ -252,11 +279,11 @@ export function createOutcomeReporter(config, { fetchImpl, log, now = Date.now }
       const hit = importance.get(fingerprint);
       if (!hit) return false;
       importance.delete(fingerprint);
-      label(hit.id, 'importance', value - 1);
+      label(hit.id, 'importance', value - 1, 'host_override');
       return true;
     },
     /** Post an importance (1-5) as the label of decision `id`. */
-    importanceLabel(id, value) { return label(id, 'importance', value - 1); },
+    importanceLabel(id, value) { return label(id, 'importance', value - 1, 'shadow_pair'); },
     /** route_request answered with decision `id` in this session. */
     routed(session, id) {
       if (typeof id !== 'string' || !JEFF_REQUEST_ID_RE.test(id)) return;
@@ -275,7 +302,7 @@ export function createOutcomeReporter(config, { fetchImpl, log, now = Date.now }
       if (!p) return false;
       routes.delete(session);
       if (!inCatalogue || now() - p.at > ROUTE_OUTCOME_WINDOW_MS) return false;
-      return label(p.id, 'tool', tool);
+      return label(p.id, 'tool', tool, 'next_call');
     },
     /** Resolves when every post in flight has finished (tests, shutdown). */
     settled: () => Promise.allSettled([...running]),

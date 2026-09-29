@@ -332,8 +332,11 @@ BOH_JEFF_OUTCOMES=1                 # outcome labels back to JEFF (default on); 
   JEFF judged (a later re-record of the same text; in shadow mode also the
   importance the host gave in the call JEFF judged in the background), and
   the tool the host called next after `route_request` (same session, within
-  120 s). Only the decision id, the question key and the label are sent:
-  `{"request_id":"req_…","question":"tool","outcome":"label","label":"srd_get"}`.
+  120 s). Only the decision id, the question key, the label and its source
+  (since 0.24.0: `host_override`, `shadow_pair` or `next_call`) are sent:
+  `{"request_id":"req_…","question":"tool","outcome":"label","label":"srd_get","source":"next_call"}`.
+  A JEFF too old for `source` answers 422; the server then drops the field
+  for the rest of the process (one log line).
   Fire-and-forget, never delays a result. `BOH_JEFF_OUTCOMES=0` turns it
   off. Over HTTP the "session" is the tenant, over stdio the process.
 - **Unset means unchanged:** without URL and key there is no `route_request`,

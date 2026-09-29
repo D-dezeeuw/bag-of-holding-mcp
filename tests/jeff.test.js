@@ -595,8 +595,8 @@ test('outcomes, mode on: a later explicit importance on the same record is poste
   assert.ok(Date.now() - t0 < 1000);
   const [post] = outcomePosts();
   assert.equal(post.headers.authorization, 'Bearer test-key');
-  // Exactly the four fields: the decision id, the question key, "label", the level index (5 → 4).
-  assert.deepEqual(post.body, { request_id: rid(1), question: 'importance', outcome: 'label', label: 4 });
+  // Exactly five fields: the decision id, the question key, "label", the level index (5 → 4), the source.
+  assert.deepEqual(post.body, { request_id: rid(1), question: 'importance', outcome: 'label', label: 4, source: 'host_override' });
   assert.equal(seen.filter((r) => r.url === '/v1/systemone').length, 1, 'an explicit importance in mode on never asks JEFF');
   assert.deepEqual(logs.at(-1), { feature: 'outcome', question: 'importance', label: 4, status: 202 });
   // Once: a third record of the same text posts nothing more.
@@ -621,7 +621,7 @@ test('outcomes, shadow mode: the host\'s own importance labels the background ju
   const b = await off.run('memory_record', { ...RECORD, importance: 4 });
   assert.deepEqual(withoutTs(a.data), withoutTs(b.data));
   await waitFor(() => outcomePosts().length === 1);
-  assert.deepEqual(outcomePosts()[0].body, { request_id: rid(3), question: 'importance', outcome: 'label', label: 3 });
+  assert.deepEqual(outcomePosts()[0].body, { request_id: rid(3), question: 'importance', outcome: 'label', label: 3, source: 'shadow_pair' });
   assert.deepEqual(seen[0].body.state, { type: 'event', text: RECORD.text });
   await waitFor(() => logs.some((l) => l.host === 4));
   assert.deepEqual(logs.find((l) => l.host === 4), { feature: 'memory_importance', mode: 'shadow', would_store: 1, host: 4, score: 0.2, confidence: 0.9, type: 'event' });
@@ -636,7 +636,7 @@ test('outcomes, shadow mode: a record without importance, later re-recorded with
   await waitFor(() => client.outcomes.remembered === 1);
   await s.run('memory_record', { ...RECORD, importance: 2 });
   await client.outcomes.settled();
-  assert.deepEqual(outcomePosts().map((p) => p.body), [{ request_id: rid(4), question: 'importance', outcome: 'label', label: 1 }]);
+  assert.deepEqual(outcomePosts().map((p) => p.body), [{ request_id: rid(4), question: 'importance', outcome: 'label', label: 1, source: 'host_override' }]);
   assert.equal(seen.filter((r) => r.url === '/v1/systemone').length, 1, 'an override is not judged again');
 });
 
@@ -651,7 +651,7 @@ test('outcomes, routing: the next catalogue tool call is posted as the choice la
   await s.run('guide_list', {});
   assert.ok(Date.now() - t0 < 500);
   await client.outcomes.settled();
-  assert.deepEqual(outcomePosts().map((p) => p.body), [{ request_id: rid(5), question: 'tool', outcome: 'label', label: 'guide_list' }]);
+  assert.deepEqual(outcomePosts().map((p) => p.body), [{ request_id: rid(5), question: 'tool', outcome: 'label', label: 'guide_list', source: 'next_call' }]);
   // Consumed: the call after that posts nothing.
   await s.run('guide_list', {});
   await client.outcomes.settled();
@@ -789,6 +789,50 @@ test('outcome reporter: the importance memory is an LRU of at most 1000; in-flig
   await r.settled();
   assert.equal(r.importanceLabel(rid(78), 1), true);
   await r.settled();
-  // Privacy: every body is exactly id, question, "label", label.
-  for (const b of bodies) assert.deepEqual(Object.keys(b).sort(), ['label', 'outcome', 'question', 'request_id']);
+  // Privacy: every body is exactly id, question, "label", label, source.
+  for (const b of bodies) assert.deepEqual(Object.keys(b).sort(), ['label', 'outcome', 'question', 'request_id', 'source']);
+});
+
+test('outcomes: an older JEFF that refuses `source` (422) gets the post again without it, and never again', async () => {
+  // A pre-D-099 JEFF: any body with `source` is a 422 naming the field.
+  const refused = { status: 422, json: { error: { code: 'INVALID_REQUEST', message: 'invalid outcome', issues: [{ path: 'source', message: 'unknown field "source"' }] } } };
+  reply = jeffReplies(
+    (body) => (body.questions.tool ? routeWithId(rid(50)) : importanceWithId(rid(51))),
+    (body) => ('source' in body ? refused : { status: 202, json: { accepted: true } }),
+  );
+  const { client, logs } = mkClient('on');
+  const s = mkServer(client);
+  await s.run('memory_record', RECORD);
+  await s.run('memory_record', { ...RECORD, importance: 5 });
+  await client.outcomes.settled();
+  assert.deepEqual(outcomePosts().map((p) => p.body), [
+    { request_id: rid(51), question: 'importance', outcome: 'label', label: 4, source: 'host_override' },
+    { request_id: rid(51), question: 'importance', outcome: 'label', label: 4 },
+  ]);
+  assert.equal(logs.filter((l) => l.outcome === 'source_unsupported').length, 1);
+  assert.deepEqual(logs.at(-1), { feature: 'outcome', question: 'importance', label: 4, status: 202 });
+  // From now on the field is left out at once: one post, no second log line.
+  await s.run(ROUTE_TOOL_NAME, { request: 'I climb.' });
+  await s.run('guide_list', {});
+  await client.outcomes.settled();
+  assert.deepEqual(outcomePosts().slice(2).map((p) => p.body), [{ request_id: rid(50), question: 'tool', outcome: 'label', label: 'guide_list' }]);
+  assert.equal(logs.filter((l) => l.outcome === 'source_unsupported').length, 1);
+});
+
+test('outcomes: a 422 that does not mention `source` is not retried and keeps the field', async () => {
+  reply = jeffReplies(
+    () => importanceWithId(rid(60)),
+    () => ({ status: 422, json: { error: { code: 'INVALID_REQUEST', issues: [{ path: 'label', message: 'bad label' }] } } }),
+  );
+  const { client, logs } = mkClient('shadow');
+  const s = mkServer(client);
+  await s.run('memory_record', { ...RECORD, importance: 2 });
+  await waitFor(() => outcomePosts().length === 1);
+  await client.outcomes.settled();
+  await s.run('memory_record', { ...RECORD, text: 'Another thing.', importance: 3 });
+  await waitFor(() => outcomePosts().length === 2);
+  await client.outcomes.settled();
+  assert.ok(outcomePosts().every((p) => p.body.source === 'shadow_pair'));
+  assert.equal(logs.filter((l) => l.outcome === 'source_unsupported').length, 0);
+  assert.equal(logs.filter((l) => l.feature === 'outcome' && l.status === 422).length, 2);
 });
