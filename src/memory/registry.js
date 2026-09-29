@@ -138,7 +138,6 @@ export function createTenantRegistry(opts = {}) {
   // revocation that didn't happen.
   let stamp = null;
   let lastCheck = -Infinity;
-  let missingReported = false;
 
   function stampOf() {
     try {
@@ -183,7 +182,6 @@ export function createTenantRegistry(opts = {}) {
     for (const message of parsed.warnings) warn(`tenant registry: ${message}`);
     tenants = parsed.tenants;
     stamp = stampOf();
-    missingReported = false;
     return true;
   }
 
@@ -196,8 +194,13 @@ export function createTenantRegistry(opts = {}) {
     if (current === null) {
       // Absent. At startup that is ordinary (the panel has not written it
       // yet); later it means someone removed a file we were reading.
-      if (stamp !== null && !missingReported) {
-        missingReported = true;
+      // Forgetting the stamp is what makes the warning fire once, and it
+      // matters for correctness too: a file restored at the same path can
+      // carry the very same mtime:size stamp (ext4 timestamps tick at the
+      // kernel's coarse clock, the inode is often reused, and token hashes
+      // are fixed-length), so a remembered stamp would hide the new file.
+      if (stamp !== null) {
+        stamp = null;
         warn(`tenant registry ${file} disappeared; keeping ${tenants.size} tenant(s) from the last good copy`);
       }
       return;
