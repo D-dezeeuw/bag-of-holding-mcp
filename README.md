@@ -303,6 +303,34 @@ endpoints return 503. "Your token is fine, this deployment just doesn't sell
 inference" is a different sentence from "your token is not ours", and a setup
 wizard needs to be able to say it.
 
+## Optional: JEFF decision layer
+
+Off unless you configure it. [JEFF](docs/jeff-decisions.md) is an open,
+self-hostable decision layer (the Jev Decisions API). When configured, it
+fills one gap: a `memory_record` that arrives **without** an `importance`
+gets one judged on the tool's own 1–5 scale, instead of every such record
+ranking as a 3 in search. An importance the host gives always wins.
+
+```bash
+BOH_JEFF_URL=https://jeff.example   # unset = off, nothing changes, no request is ever made
+BOH_JEFF_KEY=…                      # a JEFF API key
+BOH_JEFF_MODE=shadow                # shadow (default): ask and log only | on: store the judged importance
+BOH_JEFF_TIMEOUT_MS=4000
+```
+
+- **Fail open:** a timeout, an outage, a bad answer or a low-confidence
+  answer records exactly as if JEFF were unset.
+- **What leaves the server:** the record's `type` and its `text` (clipped to
+  1000 characters), and nothing else: no entities, campaign, namespace or
+  token. It is campaign prose, so point this only at a JEFF you run or
+  trust.
+- **Logs:** one JSON line per judgment on stderr (numbers only, never text).
+- **No dependency:** the platform `fetch`. https only, except to loopback.
+
+Tool routing through JEFF was measured and **not** shipped (75 % top-3 on
+held-out requests). [docs/jeff-decisions.md](docs/jeff-decisions.md) has the
+numbers and the candidates that were rejected.
+
 ## Embedding in your own host
 
 If you're building an MCP host instead of using Claude Desktop, you can wire the same tool surface to a custom transport:

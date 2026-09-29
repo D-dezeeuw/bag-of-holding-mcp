@@ -49,3 +49,6 @@ export { resolveImageConfig, tierFor, renderImage, splitDataUri, DEFAULT_IMAGE_M
 // server resolves the tier, guards the model list, and does the charging.
 export { resolveRelayConfig, relayTierFor, modelsForTier, allowedModels, planCompletion } from './src/relay.js';
 export { worlds as worldPacks, getWorld } from './src/world/index.js';
+// JEFF decision layer — optional, off unless BOH_JEFF_URL + BOH_JEFF_KEY are
+// set; exported so an embedder can build the client createServer({ jeff }) takes.
+export { resolveJeffConfig, createJeffClient } from './src/jeff.js';
