@@ -197,3 +197,114 @@ export async function judgeImportance(jeff, type, text) {
   const importance = Math.min(5, Math.max(1, Math.round(s.score) + 1));
   return { importance, score: s.score, confidence: s.confidence };
 }
+
+// ---------------------------------------------------------------------------
+// Feature: tool routing (`route_request`), registered only when JEFF is
+// configured.
+//
+// One `skill_selection` choice over the server's own tool catalogue: which
+// tool handles what a player or the DM just said? JEFF preselects (rerank,
+// K scaled with the option count, JEFF D-095/D-096) and a logprobs pick
+// ranks the survivors. The answer is advice to the host, which still picks.
+// It is a query with no side effect, so BOH_JEFF_MODE does not apply.
+// Measured in docs/jeff-decisions.md (scripts/jeff-route-bench.js).
+// ---------------------------------------------------------------------------
+
+/** Longest request text sent for a routing judgment. */
+export const ROUTE_TEXT_MAX_CHARS = 500;
+
+/** How many candidates route_request returns. */
+export const ROUTE_TOP_N = 3;
+
+/**
+ * Routing descriptions for tools whose MCP description says what the tool
+ * computes but not which player requests need it. The preselection compares
+ * the request with these words, and "I climb the wall" shares none with
+ * "Resolve a D&D 5e ability check": without them 1 of 8 plain ability-check
+ * requests and 4 of 12 held-out requests routed right; with them 7 of 8 and
+ * 12 of 12 (docs/jeff-decisions.md). They are part of the option catalogue.
+ */
+export const ROUTE_DESCRIPTIONS = Object.freeze({
+  checks_ability_check: 'A character attempts something with an uncertain outcome: sneaking, climbing, jumping, swimming, forcing a door, picking a lock, persuading, deceiving, intimidating, haggling, searching, noticing, listening, reading someone\'s intent, recalling lore, handling an animal. Resolves the ability or skill check.',
+  checks_saving_throw: 'A creature must resist something that happens to it: a trap, poison, a spell, a breath weapon, a fall, a charm or fear effect. Resolves the saving throw.',
+  conditions_apply: 'Something leaves a creature poisoned, paralyzed, petrified, stunned, frightened, charmed, blinded, deafened, grappled, restrained, prone, incapacitated or unconscious. Applies the condition to the actor.',
+  srd_get: 'Look up the rules text or stat block of one specific spell, monster, item, weapon, armor, feat, class, species or background: what does it do, what are its stats.',
+});
+
+/** A tool description cut to its first sentences, at most `max` characters. */
+export function shortDescription(description, max = 300) {
+  const d = String(description).replace(/\s+/g, ' ').trim();
+  if (d.length <= max) return d;
+  const cut = d.slice(0, max);
+  const stop = cut.lastIndexOf('. ');
+  return stop > 80 ? cut.slice(0, stop + 1) : `${cut}…`;
+}
+
+/** The first sentence of a tool description, for a one-line hint. */
+export function firstSentence(description, max = 200) {
+  const d = String(description).replace(/\s+/g, ' ').trim();
+  const m = d.match(/^.*?[.!?](?=\s|$)/);
+  const s = m ? m[0] : d;
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
+/**
+ * The skill_selection question over a tool catalogue `[{ name, description }]`.
+ * `plain` leaves out ROUTE_DESCRIPTIONS (the bench's baseline).
+ */
+export function routeQuestion(tools, { plain = false } = {}) {
+  return {
+    type: 'choice',
+    instructions: 'Which Bag of Holding tool should the AI Dungeon Master call first to handle this request at a D&D table?',
+    criteria: Object.fromEntries(tools.map((t) => [t.name, (plain ? undefined : ROUTE_DESCRIPTIONS[t.name]) ?? shortDescription(t.description)])),
+  };
+}
+
+/** The whole state that leaves the server for a routing judgment: the request text, clipped. */
+export function routeState(text) {
+  const t = String(text);
+  return { request: t.length > ROUTE_TEXT_MAX_CHARS ? t.slice(0, ROUTE_TEXT_MAX_CHARS) : t };
+}
+
+/**
+ * Ask JEFF which tools fit a request. Never throws. Resolves to
+ * `{ candidates: [{ tool, probability, hint }], confidence }`, or
+ * `{ candidates: [], reason }` when JEFF gave no usable answer.
+ *
+ * @param {ReturnType<typeof createJeffClient>} jeff
+ * @param {{ question: object, hints: Map<string, string> }} catalogue  from routeCatalogue()
+ * @param {string} text
+ */
+export async function routeRequest(jeff, catalogue, text) {
+  let res;
+  try {
+    res = await jeff.decide({
+      feature: 'tool_route',
+      family: 'skill_selection',
+      state: routeState(text),
+      questions: { tool: catalogue.question },
+    });
+  } catch { res = null; }
+  if (!res) return { candidates: [], reason: 'JEFF did not answer (unreachable, timed out or returned an invalid response). Choose the tool yourself.' };
+  const a = res.answers?.tool;
+  const probs = a && a.type === 'choice' && a.probabilities && typeof a.probabilities === 'object' ? a.probabilities : null;
+  if (!probs) return { candidates: [], reason: 'JEFF returned no tool choice. Choose the tool yourself.' };
+  const ranked = Object.entries(probs)
+    .filter(([name, p]) => catalogue.hints.has(name) && typeof p === 'number' && Number.isFinite(p) && p >= 0.0005)
+    .sort((x, y) => y[1] - x[1])
+    .slice(0, ROUTE_TOP_N);
+  if (ranked.length === 0) return { candidates: [], reason: 'JEFF named no known tool. Choose the tool yourself.' };
+  const candidates = ranked.map(([tool, p]) => ({ tool, probability: Math.round(p * 1000) / 1000, hint: catalogue.hints.get(tool) }));
+  const confidence = typeof a.confidence === 'number' && Number.isFinite(a.confidence) ? a.confidence : null;
+  try { jeff.log({ feature: 'tool_route', top: candidates[0].tool, probability: candidates[0].probability, confidence }); } catch { /* never breaks a call */ }
+  return { candidates, confidence };
+}
+
+/** Build the question and hint table once from the live tool list. */
+export function routeCatalogue(tools) {
+  const list = tools.map((t) => ({ name: t.name, description: t.description }));
+  return {
+    question: routeQuestion(list),
+    hints: new Map(list.map((t) => [t.name, firstSentence(t.description)])),
+  };
+}

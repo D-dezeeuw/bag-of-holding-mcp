@@ -307,29 +307,47 @@ wizard needs to be able to say it.
 
 Off unless you configure it. [JEFF](docs/jeff-decisions.md) is an open,
 self-hostable decision layer (the Jev Decisions API). When configured, it
-fills one gap: a `memory_record` that arrives **without** an `importance`
-gets one judged on the tool's own 1–5 scale, instead of every such record
-ranking as a 3 in search. An importance the host gives always wins.
+does two things:
+
+- **Memory importance.** A `memory_record` that arrives **without** an
+  `importance` gets one judged on the tool's own 1–5 scale, instead of every
+  such record ranking as a 3 in search. An importance the host gives always
+  wins.
+- **Tool routing (since 0.22.0).** One extra tool, `route_request`: give it
+  what the player or DM said ("I try to sneak past the guard") and it returns
+  up to three likeliest tools of this server, each with a probability and a
+  one-line hint. The server's `instructions` then tell the host to call it
+  first when unsure which tool fits. It is advice; the host still picks.
 
 ```bash
 BOH_JEFF_URL=https://jeff.example   # unset = off, nothing changes, no request is ever made
 BOH_JEFF_KEY=…                      # a JEFF API key
-BOH_JEFF_MODE=shadow                # shadow (default): ask and log only | on: store the judged importance
+BOH_JEFF_MODE=shadow                # memory importance only — shadow (default): ask and log | on: store the judged importance
 BOH_JEFF_TIMEOUT_MS=4000
 ```
 
-- **Fail open:** a timeout, an outage, a bad answer or a low-confidence
-  answer records exactly as if JEFF were unset.
-- **What leaves the server:** the record's `type` and its `text` (clipped to
-  1000 characters), and nothing else: no entities, campaign, namespace or
-  token. It is campaign prose, so point this only at a JEFF you run or
-  trust.
-- **Logs:** one JSON line per judgment on stderr (numbers only, never text).
+- **Unset means unchanged:** without URL and key there is no `route_request`,
+  no server instructions, and the tool list is byte-identical to 0.21.0 (a
+  test pins its hash).
+- **Mode:** `BOH_JEFF_MODE` governs memory importance only. `route_request`
+  is a query with no side effect, so it answers in either mode.
+- **Fail open:** for importance, a timeout, an outage, a bad answer or a
+  low-confidence answer records exactly as if JEFF were unset. For routing,
+  the same failures return `{ "candidates": [], "reason": "…" }`, never an
+  error.
+- **What leaves the server:** for importance, the record's `type` and its
+  `text` (clipped to 1000 characters); for routing, the request text
+  (clipped to 500 characters) plus the tool catalogue (names and
+  descriptions, public anyway). No entities, campaign, namespace or token.
+  It is campaign prose, so point this only at a JEFF you run or trust.
+- **Logs:** one JSON line per judgment on stderr (numbers and tool names,
+  never text).
 - **No dependency:** the platform `fetch`. https only, except to loopback.
 
-Tool routing through JEFF was measured and **not** shipped (75 % top-3 on
-held-out requests). [docs/jeff-decisions.md](docs/jeff-decisions.md) has the
-numbers and the candidates that were rejected.
+Routing accuracy against a live JEFF (0.22.0): 100 % top-3 on 12 held-out
+requests and 87.5 % on eight "I try to …" player actions, p50 ≈ 0.85 s.
+[docs/jeff-decisions.md](docs/jeff-decisions.md) has the numbers and the
+candidates that were rejected.
 
 ## Embedding in your own host
 

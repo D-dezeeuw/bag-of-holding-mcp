@@ -1,0 +1,14 @@
+{ "cases": [
+ { "u": "I pry open the rusted portcullis.", "expect": ["checks_ability_check"] },
+ { "u": "I haggle with the blacksmith for a better price.", "expect": ["checks_ability_check"] },
+ { "u": "I listen at the door for voices.", "expect": ["checks_ability_check"] },
+ { "u": "I swim across the flooded cellar.", "expect": ["checks_ability_check"] },
+ { "u": "The basilisk's gaze turns the ranger's legs to stone - he's petrified.", "expect": ["conditions_apply"] },
+ { "u": "The bandit shoves the cleric and she falls prone.", "expect": ["conditions_apply", "checks_saving_throw"] },
+ { "u": "How many hit points does a young green dragon have?", "expect": ["srd_get"] },
+ { "u": "What are the stats for a longbow?", "expect": ["srd_get"] },
+ { "u": "The trap sprays poison gas, everyone resist it.", "expect": ["checks_saving_throw"] },
+ { "u": "I fire my crossbow at the cultist.", "expect": ["combat_attack_roll"] },
+ { "u": "Write down that the mayor is secretly a vampire.", "expect": ["memory_record"] },
+ { "u": "What happened with Captain Orsk last time?", "expect": ["memory_search"] }
+]}

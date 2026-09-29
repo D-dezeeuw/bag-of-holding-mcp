@@ -1,10 +1,11 @@
 # JEFF decisions: what is wired in, what is not, and why
 
-**Status:** shipped in 0.21.0, off by default. One integration point is
-in: the importance of a `memory_record` when the host leaves it out. Tool
-routing was built, measured and left out. The other candidates were rejected
-on reading the code. Everything below comes from measurements against a live
-JEFF on 29 Sep 2026.
+**Status:** off by default. Two integration points are in: the importance
+of a `memory_record` when the host leaves it out (0.21.0), and a
+`route_request` tool that suggests which tool fits a request (0.22.0, after
+JEFF's preselection changed). The other candidates were rejected on reading
+the code. Everything below comes from measurements against a live JEFF on
+29 Sep 2026.
 
 JEFF is an open, self-hostable decision layer that
 speaks the Jev Decisions API. You send it a `state` and typed questions
@@ -51,7 +52,8 @@ BOH_JEFF_TIMEOUT_MS=4000              # per request; a timeout is not retried
 Log lines go to **stderr** as one JSON object each, prefixed with
 `{"jeff":true,…}`. stdout is the MCP stdio channel. A log line carries
 numbers (the stored or would-be importance, the score, the confidence and
-the record type), never record text and never the key.
+the record type; for routing the top tool name, its probability and the
+confidence), never record or request text and never the key.
 
 ## Shipped: memory importance when the host gives none
 
@@ -106,50 +108,112 @@ it only at a JEFF they run or trust. JEFF itself sends the state on to its
 configured upstream model (OpenRouter on the reference deployment) and keeps
 telemetry per its own settings.
 
-## Measured and not shipped: tool routing (`boh_route`)
+## Shipped in 0.22.0: tool routing (`route_request`)
 
-**The idea.** A `boh_route` tool ("which of the 108 tools handles this
-request?"), backed by one JEFF `skill_selection` choice over the whole
-catalogue, with JEFF's embedding preselection (top 8 of 108, D-067) in front
-of a logprobs pick. The server `instructions` would tell hosts to call it
-first when unsure.
+**The tool.** `route_request { request }` asks one JEFF `skill_selection`
+choice over the server's own tool catalogue (every other tool, built from
+the live list at startup: the MCP description cut to its first sentences,
+or one of four routing descriptions, see below) and returns
 
-**Measurement** (`scripts/jeff-route-bench.js`, live JEFF, family
-`skill_selection`):
+```json
+{"candidates": [{"tool": "checks_ability_check", "probability": 0.97,
+                 "hint": "Resolve a D&D 5e ability check."}, …],
+ "confidence": 0.97}
+```
+
+with up to three tools (known tool names only, probability ≥ 0.0005, the
+hint is the first sentence of that tool's description). The server
+`instructions` tell the host to call it first when unsure which tool fits.
+The tool name follows the `<group>_<verb>` convention of the other tools.
+
+- **Registered only with JEFF configured.** With `BOH_JEFF_URL` or
+  `BOH_JEFF_KEY` unset there is no `route_request` and no `instructions`,
+  and the `tools/list` bytes are those of 0.21.0 (`tests/jeff.test.js` pins
+  their SHA-256). With JEFF set, the other 108 tools are listed exactly as
+  without it.
+- **`BOH_JEFF_MODE` does not apply.** It is a query with no side effect, so
+  there is nothing for shadow mode to hold back, and a tool the host can see
+  cannot be shadowed anyway. It answers in `shadow` and in `on`.
+- **Fail open.** Timeout, network error, non-200, a body that is not a JEFF
+  response, no `choice` answer, or only unknown tool names: the result is
+  `{"candidates": [], "reason": "…"}`, never a tool error. The host then
+  picks the tool itself, as it would without JEFF.
+- **Advice, not dispatch.** The server does not call the suggested tool.
+
+**What leaves the server** (the whole request body):
+
+```json
+{"model": "jeff/auto",
+ "state": {"request": "<the request text, at most 500 characters>"},
+ "questions": {"tool": {"type": "choice", "instructions": "…",
+                        "criteria": {"<tool name>": "<description>", "…": "… (108 entries)"}}},
+ "jeff": {"decision_family": "skill_selection"}}
+```
+
+The catalogue is this server's public tool list. The request text is the
+player's or DM's words, so the same "point it only at a JEFF you trust"
+applies as for importance. The log line carries the top tool name, its
+probability and the confidence, never the request.
+
+**Routing descriptions.** Four tools get a description in the words players
+use (`ROUTE_DESCRIPTIONS` in `src/jeff.js`): `checks_ability_check`,
+`checks_saving_throw`, `conditions_apply`, `srd_get`. They ship as part of
+the option catalogue and are what makes the held-out set pass (see the
+`--plain` rows below). They were written against the "I try to …" set and
+before the held-out set.
+
+**Measurement, 0.22.0** (`scripts/jeff-route-bench.js` against production
+JEFF, which now runs JEFF D-095/D-096: preselection by rerank with K scaled
+to the catalogue, 24 of 108 here, then an `llm_logprobs` pick. 120 requests):
+
+| set | option text | n | top-1 | top-3 | p50 | cost (set) |
+|---|---|---|---|---|---|---|
+| `jeff-route-fixture.json` (tool vocabulary) | MCP descriptions (`--plain`) | 40 | 95 % | 95 % | 764 ms | $0.0162 |
+| `jeff-route-fixture.json` | + 4 routing descriptions | 40 | 100 % | 100 % | 842 ms | $0.0165 |
+| `jeff-route-checks-fixture.json` ("I try to …") | MCP descriptions | 8 | 12.5 % | 25 % | 1000 ms | $0.0032 |
+| `jeff-route-checks-fixture.json` | + 4 routing descriptions | 8 | 87.5 % | 87.5 % | 941 ms | $0.0033 |
+| `jeff-route-heldout-fixture.json` | MCP descriptions | 12 | 33 % | 33 % | 796 ms | $0.0049 |
+| `jeff-route-heldout-fixture.json` | **+ 4 routing descriptions** | 12 | **100 %** | **100 %** | 846 ms | $0.0050 |
+
+About $0.0004 and 0.85 s per call. The one miss with routing descriptions is
+"I want to recall what I know about this ancient rune" (→ `world_npc`,
+`guide_get`, `world_node`; the right tool got 0.04). Without them, plain
+ability checks still route to `narration_prompt` or `image_observe`, so the
+descriptions carry the result, not the preselection alone.
+
+**Measurement, 0.21.0** (the same bench, JEFF with embedding preselection,
+top 8 of 108, JEFF D-067):
 
 | set | option text | n | top-1 | top-3 | p50 | cost |
 |---|---|---|---|---|---|---|
 | `jeff-route-fixture.json` | MCP descriptions (`--plain`) | 40 | 92.5 % | 92.5 % | 568 ms | $0.0061 |
-| "I try to …" requests (sneak, climb, persuade, search, …) | MCP descriptions | 8 | **0 %** | **0 %** | 569 ms | $0.0010 |
+| "I try to …" requests | MCP descriptions | 8 | 0 % | 0 % | 569 ms | $0.0010 |
 | `jeff-route-fixture.json` | + 4 routing descriptions | 40 | 100 % | 100 % | 502 ms | $0.0059 |
 | "I try to …" requests | + 4 routing descriptions | 8 | 87.5 % | 87.5 % | 541 ms | $0.0012 |
-| held out (written before the descriptions) | + 4 routing descriptions | 12 | **75 %** | **75 %** | 552 ms | $0.0018 |
+| held out | + 4 routing descriptions | 12 | 75 % | 75 % | 552 ms | $0.0018 |
 
-**Why it is not shipped:**
+**Why it was held back in 0.21.0, and what changed.**
 
-1. **It misses the bar on fresh requests.** The first fixture used tool
-   vocabulary ("roll initiative", "saving throw") and flattered the router.
-   Plain ability-check requests, the most common thing a player says, went
-   0 for 8, each routed with confidence to `image_observe` or `world_search`.
-   Hand-written routing descriptions for four tools fixed exactly those four
-   tools. On the held-out set, every request in an untuned class missed
-   (a crossbow attack, "write down that…", "what happened with Orsk last
-   time?"). 75 % top-3 is below the ~85 % bar.
-2. **Top-3 is no safety net.** Every miss was a preselection drop: the right
-   tool got probability 0 because the embedding stage did not rank it in the
-   top 8. So top-3 always equals top-1, and a wrong answer is wrong
-   outright, not a near miss.
-3. **It would not remove what it was meant to remove.** MCP lists every tool
-   to the host on every turn whether or not a router exists, and a frontier
-   host picks the right tool for these requests without help. The router
-   would add a round trip (about 0.5 s plus a host turn) to save reasoning
-   the host is good at.
-4. **It has no shadow form.** A tool the host can see is a behaviour change
-   in itself.
+1. *It missed the bar on fresh requests* (75 % top-3 held out, bar 85 %),
+   and *top-3 was no safety net*: every miss was a preselection drop (the
+   right tool at probability 0, outside JEFF's top 8). JEFF D-095/D-096
+   made the preselection scale with the catalogue and rank with a reranker.
+   The held-out set now scores 100 % top-3 with the routing descriptions,
+   so both reasons are gone. The shipping bar was ≥ 85 % top-3 on held-out
+   requests with the descriptions.
+2. *It would not remove what it was meant to remove*: MCP still lists every
+   tool, and a frontier host usually picks right unaided. That still holds,
+   which is why the tool is advice the host may call "when unsure", not a
+   step every turn, and why it is off unless an operator configures JEFF.
+3. *It has no shadow form*: also still true. So `BOH_JEFF_MODE` does not
+   gate it; configuring JEFF is the switch.
 
-The bench, the fixture and the question builder (including the four routing
-descriptions) stay in `scripts/`, which is not published, so the measurement
-can be repeated.
+**Caveats.** The sets are small (12 held-out requests) and one author wrote
+them. JEFF's own D-095 fixture includes these 12 requests, so they were
+also used to choose JEFF's new preselection default; they are held out from
+the routing descriptions, not from JEFF's tuning. Classes the four routing
+descriptions do not cover depend on the tools' own descriptions, which say
+what a tool computes rather than what a player says.
 
 ## Rejected after reading the code
 
@@ -182,10 +246,11 @@ can be repeated.
   set against records whose importance the host did give, or against
   corrections made through `memory_forget`. Switch it on if JEFF agrees with
   host-given values about as often as the fixture shows (≥ 75 % exact).
-- **Routing:** re-run `scripts/jeff-route-bench.js` on the held-out set
-  after JEFF's preselection changes (see below), and on a fixture drawn from
-  real transcripts. Reconsider when top-3 on held-out requests is ≥ 85 %
-  and top-3 is actually better than top-1.
+- **Routing:** a fixture drawn from real transcripts (the `tool_route` log
+  lines give the top pick; the tool the host then called gives the label).
+  Add a routing description for each class that misses there, the way the
+  four existing ones fixed ability checks, saves, conditions and lookups. If
+  real-transcript top-3 falls below 85 %, take the tool out again.
 - **Relay tier hint:** only if relay logs show a real share of model-less
   completions, or if the tier tables get a `large` slot that differs from
   `medium`.
@@ -195,13 +260,10 @@ can be repeated.
 
 ## What JEFF could change (not done here; JEFF is read-only from this repo)
 
-- **Preselection recall on large catalogues.** `skill_selection` keeps the
-  top 8 by embedding. With 108 options every miss above was a preselection
-  drop, even when the logprob stage would plainly have picked the right tool.
-  A `top_k` that grows with the option count (the "would change if" in
-  D-067), or rerank preselection for more than ~50 options, would address
-  it. A `preselect_recall` telemetry field (was the final pick near the top
-  K, and how far was the runner-up) would show this without a labelled set.
+- **Preselection recall on large catalogues.** Done in JEFF D-095/D-096
+  (K scales with the option count, rerank preselection for
+  `skill_selection`, `kept_min_score`/`dropped_top_score` in the response),
+  which is what let routing ship in 0.22.0.
 - **An unknown family name.** `boh_memory_importance` is not a built-in
   family, so it takes the `default` route (llm_logprobs, falling back to
   llm_json). That is the right engine here. A families entry would still

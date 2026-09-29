@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 // Measure JEFF as a tool router for this server: every utterance in
 // scripts/jeff-route-fixture.json is asked as ONE skill_selection choice over
-// the full tool catalogue (routeQuestion below), and the answer is scored
+// the full tool catalogue (routeQuestion in src/jeff.js), and the answer is scored
 // against the fixture's accepted tools.
 //
 //   BOH_JEFF_URL=https://jeff.example BOH_JEFF_KEY=… node scripts/jeff-route-bench.js [--fixture f.json] [--plain] [--out file.json]
 //
 // --plain uses only the tools' own MCP descriptions (the first measurement);
-// the default adds ROUTE_DESCRIPTIONS below for four tools.
+// the default adds ROUTE_DESCRIPTIONS (src/jeff.js) for four tools, which is
+// exactly the catalogue the shipped route_request tool sends.
 //
-// The router itself was NOT shipped: see docs/jeff-decisions.md. This script
-// and its question stay so the measurement can be repeated when JEFF's
-// preselection changes.
+// Fixtures: jeff-route-fixture.json (40 requests in tool vocabulary),
+// jeff-route-checks-fixture.json (8 "I try to …" player actions) and
+// jeff-route-heldout-fixture.json (12 requests written before the routing
+// descriptions). Results: docs/jeff-decisions.md.
 //
 // Prints top-1 / top-3 accuracy, p50/p90 latency and the upstream cost JEFF
 // reported. Not part of the published package (scripts/ is not in `files`).
@@ -20,38 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.js';
-
-/** A tool description cut to its first sentences, at most `max` characters. */
-function shortDescription(description, max = 300) {
-  const d = String(description).replace(/\s+/g, ' ').trim();
-  if (d.length <= max) return d;
-  const cut = d.slice(0, max);
-  const stop = cut.lastIndexOf('. ');
-  return stop > 80 ? cut.slice(0, stop + 1) : `${cut}…`;
-}
-
-/**
- * Routing descriptions for tools whose MCP description says what the tool
- * computes but not which player requests need it. JEFF's embedding
- * preselection compares the request with these words, and "I climb the wall"
- * shares none with "Resolve a D&D 5e ability check" (0 of 8 such requests
- * routed without them; docs/jeff-decisions.md).
- */
-const ROUTE_DESCRIPTIONS = Object.freeze({
-  checks_ability_check: 'A character attempts something with an uncertain outcome: sneaking, climbing, jumping, swimming, forcing a door, picking a lock, persuading, deceiving, intimidating, haggling, searching, noticing, listening, reading someone\'s intent, recalling lore, handling an animal. Resolves the ability or skill check.',
-  checks_saving_throw: 'A creature must resist something that happens to it: a trap, poison, a spell, a breath weapon, a fall, a charm or fear effect. Resolves the saving throw.',
-  conditions_apply: 'Something leaves a creature poisoned, paralyzed, petrified, stunned, frightened, charmed, blinded, deafened, grappled, restrained, prone, incapacitated or unconscious. Applies the condition to the actor.',
-  srd_get: 'Look up the rules text or stat block of one specific spell, monster, item, weapon, armor, feat, class, species or background: what does it do, what are its stats.',
-});
-
-/** The skill_selection question over a tool catalogue `[{ name, description }]`. */
-function routeQuestion(tools, plain = false) {
-  return {
-    type: 'choice',
-    instructions: 'Which Bag of Holding tool should the AI Dungeon Master call first to handle this request at a D&D table?',
-    criteria: Object.fromEntries(tools.map((t) => [t.name, (plain ? undefined : ROUTE_DESCRIPTIONS[t.name]) ?? shortDescription(t.description)])),
-  };
-}
+import { routeQuestion } from '../src/jeff.js';
 
 const url = (process.env.BOH_JEFF_URL ?? '').replace(/\/+$/, '');
 const key = process.env.BOH_JEFF_KEY ?? '';
@@ -65,7 +36,8 @@ const fixturePath = fxIdx > 0 ? process.argv[fxIdx + 1] : new URL('./jeff-route-
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-route-'));
 const { tools } = createServer({ memory: { dataDir }, jeff: null });
-const question = routeQuestion(tools.map((t) => ({ name: t.name, description: t.description })), plainRun);
+// The catalogue route_request routes over: every tool of a JEFF-less server.
+const question = routeQuestion(tools.map((t) => ({ name: t.name, description: t.description })), { plain: plainRun });
 
 const rows = [];
 for (const c of fixture.cases) {

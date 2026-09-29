@@ -47,6 +47,7 @@ import { soloTools } from './tools/solo.js';
 import { narrationTools } from './tools/narration.js';
 import { imageTools } from './tools/images.js';
 import { resolveJeffConfig, createJeffClient } from './jeff.js';
+import { routeTools, ROUTE_INSTRUCTIONS } from './tools/route.js';
 
 const SERVER_NAME = 'bag-of-holding';
 // The version every MCP handshake advertises. Read from package.json
@@ -107,9 +108,7 @@ export function createServer(opts = {}) {
   // are set (or a client is injected), and every JEFF path is skipped on null.
   // `jeff: null` forces it off whatever the environment says.
   const jeff = opts.jeff !== undefined ? opts.jeff : createJeffClient(resolveJeffConfig(process.env));
-  const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-
-  const allTools = [
+  const baseTools = [
     ...worldsTools(worlds, playthroughs, opts.memoryToken),
     ...engineTools(sessions),
     ...diceTools(sessions),
@@ -137,6 +136,14 @@ export function createServer(opts = {}) {
     // a slice.
     ...narrationTools()
   ];
+  // route_request exists only with JEFF configured, and so do the server
+  // instructions that point hosts at it. Without JEFF the tool list and the
+  // handshake are exactly those of 0.21.0 (tests/jeff.test.js pins it).
+  const routing = routeTools(jeff, baseTools);
+  const allTools = [...baseTools, ...routing];
+  const server = routing.length > 0
+    ? new McpServer({ name: SERVER_NAME, version: SERVER_VERSION }, { instructions: ROUTE_INSTRUCTIONS })
+    : new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
   for (const tool of allTools) {
     server.tool(tool.name, tool.description, tool.input, tool.handler);

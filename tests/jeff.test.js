@@ -13,7 +13,9 @@ import { createHttpHandler } from '../src/http.js';
 import {
   resolveJeffConfig, createJeffClient, readScore, judgeImportance,
   importanceState, DEFAULT_JEFF_TIMEOUT_MS, MEMORY_TEXT_MAX_CHARS,
+  routeState, routeQuestion, firstSentence, ROUTE_DESCRIPTIONS, ROUTE_TEXT_MAX_CHARS,
 } from '../src/jeff.js';
+import { ROUTE_TOOL_NAME, ROUTE_INSTRUCTIONS } from '../src/tools/route.js';
 import { parse } from './_helpers.js';
 
 // The optional JEFF decision layer (docs/jeff-decisions.md). Three promises
@@ -345,16 +347,19 @@ test('memory_record: an unauthorised token never reaches JEFF', async () => {
 
 // ------------------------------------------------ surface stays the same
 
-test('JEFF adds no tool and no instructions, in either mode', async () => {
+test('JEFF adds exactly route_request and the instructions, in either mode', async () => {
   const off = mkServer(null);
   for (const mode of ['shadow', 'on']) {
     const s = mkServer(mkClient(mode).client);
-    assert.deepEqual(s.tools.map((t) => t.name), off.tools.map((t) => t.name));
+    assert.deepEqual(s.tools.map((t) => t.name), [...off.tools.map((t) => t.name), ROUTE_TOOL_NAME]);
     const client = new Client({ name: 't', version: '0' });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await s.server.connect(st);
     await client.connect(ct);
-    assert.equal(client.getInstructions(), undefined);
+    assert.equal(client.getInstructions(), ROUTE_INSTRUCTIONS);
+    const listed = (await client.listTools()).tools;
+    assert.equal(listed.length, off.tools.length + 1);
+    assert.ok(listed.some((t) => t.name === ROUTE_TOOL_NAME));
     await client.close();
   }
 });
@@ -408,4 +413,131 @@ test('createHttpHandler takes an injected client or null', async () => {
   // Both forms of the HTTP seam construct without touching the network.
   assert.ok(createHttpHandler({ memory: { dataDir: tmpDirs[0] }, jeff: null }).handler);
   assert.ok(createHttpHandler({ memory: { dataDir: tmpDirs[0] }, jeff: mkClient('on').client }).handler);
+});
+
+// ------------------------------------------------------------ route_request
+
+// The tools/list of 0.21.0 with JEFF unset, as the bytes an MCP client
+// receives (JSON of listTools().tools). Pinned so the optional routing tool
+// provably changes nothing for a deployment without BOH_JEFF_*. A deliberate
+// change to any tool's name, description or schema must update this hash.
+const TOOLS_LIST_SHA256_0_21_0 = 'a9b0aa69922b42500064fc7331ddd299d32088727b73d0ec4f1858102b2d8625';
+
+async function listOf(s) {
+  const client = new Client({ name: 't', version: '0' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await s.server.connect(st);
+  await client.connect(ct);
+  const tools = (await client.listTools()).tools;
+  const instructions = client.getInstructions();
+  await client.close();
+  return { tools, instructions };
+}
+
+test('route_request: not registered without JEFF; tools/list byte-identical to 0.21.0', async () => {
+  const saved = {};
+  for (const k of ['BOH_JEFF_URL', 'BOH_JEFF_KEY', 'BOH_JEFF_MODE']) { saved[k] = process.env[k]; delete process.env[k]; }
+  try {
+    for (const s of [mkServer(null), mkServer(undefined)]) {
+      assert.ok(!s.tools.some((t) => t.name === ROUTE_TOOL_NAME));
+      const { tools, instructions } = await listOf(s);
+      assert.equal(instructions, undefined);
+      assert.equal(tools.length, 108);
+      assert.equal(createHash('sha256').update(JSON.stringify(tools)).digest('hex'), TOOLS_LIST_SHA256_0_21_0);
+    }
+  } finally {
+    for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v;
+  }
+});
+
+test('route_request: with JEFF the other 108 tools are listed exactly as without it', async () => {
+  const off = await listOf(mkServer(null));
+  const on = await listOf(mkServer(mkClient('shadow').client));
+  assert.deepEqual(on.tools.filter((t) => t.name !== ROUTE_TOOL_NAME), off.tools);
+});
+
+const choiceAnswer = (probabilities, confidence = 0.8) => ({
+  status: 200,
+  json: { id: 'req_r', answers: { tool: { type: 'choice', choice: Object.keys(probabilities)[0], confidence, probabilities } }, jeff: { answers: {} } },
+});
+
+test('route_request: success returns the top 3 known tools with probabilities and hints', async () => {
+  reply = () => choiceAnswer({ conditions_apply: 0.05, checks_ability_check: 0.8, dice_roll: 0.1, not_a_tool: 0.03, srd_get: 0.02, memory_record: 0 });
+  const { client, logs } = mkClient('shadow');   // mode does not matter for a query tool
+  const s = mkServer(client);
+  const out = await s.run(ROUTE_TOOL_NAME, { request: 'I try to sneak past the guard.' });
+  assert.deepEqual(out.data.candidates.map((c) => c.tool), ['checks_ability_check', 'dice_roll', 'conditions_apply']);
+  assert.deepEqual(out.data.candidates.map((c) => c.probability), [0.8, 0.1, 0.05]);
+  const check = s.tools.find((t) => t.name === 'checks_ability_check');
+  assert.equal(out.data.candidates[0].hint, firstSentence(check.description));
+  assert.ok(out.data.candidates.every((c) => typeof c.hint === 'string' && c.hint.length > 0 && c.hint.length <= 200 && !c.hint.includes('\n')));
+  assert.equal(out.data.confidence, 0.8);
+  assert.equal(out.data.reason, undefined);
+  assert.deepEqual(logs, [{ feature: 'tool_route', top: 'checks_ability_check', probability: 0.8, confidence: 0.8 }]);
+});
+
+test('route_request: sends only the clipped request over the live catalogue with routing descriptions', async () => {
+  reply = () => choiceAnswer({ srd_get: 1 });
+  const s = mkServer(mkClient('on').client);
+  const long = 'x'.repeat(ROUTE_TEXT_MAX_CHARS + 300);
+  await s.run(ROUTE_TOOL_NAME, { request: long });
+  assert.equal(seen.length, 1);
+  const { body, headers, url } = seen[0];
+  assert.equal(url, '/v1/systemone');
+  assert.equal(headers.authorization, 'Bearer test-key');
+  assert.deepEqual(Object.keys(body).sort(), ['jeff', 'model', 'questions', 'state']);
+  assert.deepEqual(body.state, { request: 'x'.repeat(ROUTE_TEXT_MAX_CHARS) });
+  assert.deepEqual(body.jeff, { decision_family: 'skill_selection' });
+  assert.deepEqual(Object.keys(body.questions), ['tool']);
+  const criteria = body.questions.tool.criteria;
+  assert.equal(Object.keys(criteria).length, 108);
+  assert.ok(!(ROUTE_TOOL_NAME in criteria), 'the router does not route to itself');
+  for (const [name, text] of Object.entries(ROUTE_DESCRIPTIONS)) assert.equal(criteria[name], text);
+  assert.deepEqual(body.questions.tool, routeQuestion(s.tools.filter((t) => t.name !== ROUTE_TOOL_NAME)));
+  assert.deepEqual(routeState('short'), { request: 'short' });
+});
+
+test('route_request: JEFF down, slow or garbled gives an empty list with a reason, never an error', async () => {
+  const cases = [
+    () => ({ status: 503, json: {} }),                                             // non-200
+    () => ({ status: 200, raw: 'not json at all' }),                              // garbage body
+    () => ({ status: 200, json: { hello: 'world' } }),                            // not a JEFF response
+    () => ({ status: 200, json: { answers: {} } }),                               // no answer for the key
+    () => ({ status: 200, json: { answers: { tool: { type: 'score', score: 2 } } } }),       // wrong answer type
+    () => ({ status: 200, json: { answers: { tool: { type: 'choice', probabilities: 'x' } } } }),
+    () => choiceAnswer({ made_up_tool: 0.9, another: 0.1 }),                      // no known tool
+    () => ({ status: 200, json: { answers: {} }, delayMs: 600 }),                 // timeout (300 ms)
+  ];
+  for (const r of cases) {
+    reply = r;
+    const s = mkServer(mkClient('on').client);
+    const res = await s.tools.find((t) => t.name === ROUTE_TOOL_NAME).handler({ request: 'I climb the wall.' });
+    assert.ok(!res.isError);
+    const out = parse(res);
+    assert.deepEqual(out.data.candidates, []);
+    assert.equal(typeof out.data.reason, 'string');
+    assert.ok(out.data.reason.length > 0);
+  }
+});
+
+test('route_request: an unreachable JEFF fails open too', async () => {
+  const client = createJeffClient(resolveJeffConfig({ BOH_JEFF_URL: 'http://127.0.0.1:1', BOH_JEFF_KEY: 'k', BOH_JEFF_TIMEOUT_MS: '300' }), { log: () => {} });
+  const s = mkServer(client);
+  const out = await s.run(ROUTE_TOOL_NAME, { request: 'What are the stats for a longbow?' });
+  assert.deepEqual(out.data.candidates, []);
+  assert.match(out.data.reason, /JEFF did not answer/);
+});
+
+test('route_request: a client whose decide throws still does not throw', async () => {
+  const s = mkServer({ mode: 'on', decide: async () => { throw new Error('boom'); }, log: () => {} });
+  const out = await s.run(ROUTE_TOOL_NAME, { request: 'x' });
+  assert.deepEqual(out.data.candidates, []);
+  assert.ok(out.data.reason);
+});
+
+test('firstSentence: one line, first sentence, bounded', () => {
+  assert.equal(firstSentence('Roll a die. Then more.'), 'Roll a die.');
+  assert.equal(firstSentence('No stop here'), 'No stop here');
+  assert.equal(firstSentence('a\n b.  c'), 'a b.');
+  assert.equal(firstSentence('y'.repeat(300)).length, 200);
 });

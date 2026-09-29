@@ -1,0 +1,10 @@
+{ "cases": [
+ { "u": "I try to sneak past the sleeping guard.", "expect": ["checks_ability_check"] },
+ { "u": "I climb the crumbling tower wall.", "expect": ["checks_ability_check"] },
+ { "u": "I try to convince the captain to let us through.", "expect": ["checks_ability_check"] },
+ { "u": "I search the room for hidden doors.", "expect": ["checks_ability_check"] },
+ { "u": "Can I tell if the merchant is lying?", "expect": ["checks_ability_check"] },
+ { "u": "I try to calm the frightened horse.", "expect": ["checks_ability_check"] },
+ { "u": "I leap across the chasm.", "expect": ["checks_ability_check"] },
+ { "u": "I want to recall what I know about this ancient rune.", "expect": ["checks_ability_check"] }
+]}
