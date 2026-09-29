@@ -3,8 +3,10 @@
 **Status:** off by default. Two integration points are in: the importance
 of a `memory_record` when the host leaves it out (0.21.0), and a
 `route_request` tool that suggests which tool fits a request (0.22.0, after
-JEFF's preselection changed). The other candidates were rejected on reading
-the code. Everything below comes from measurements against a live JEFF on
+JEFF's preselection changed). Since 0.23.0 both report what happened
+afterwards to JEFF as outcome labels, for its calibration (see
+[Outcomes](#outcomes-since-0230)). The other candidates were rejected on
+reading the code. Everything below comes from measurements against a live JEFF on
 29 Sep 2026.
 
 JEFF is an open, self-hostable decision layer that
@@ -47,6 +49,7 @@ BOH_JEFF_URL=https://jeff.example     # unset = JEFF off (the default)
 BOH_JEFF_KEY=…                        # a JEFF API key; unset = JEFF off
 BOH_JEFF_MODE=shadow                  # shadow (default) | on — anything else reads as shadow
 BOH_JEFF_TIMEOUT_MS=4000              # per request; a timeout is not retried
+BOH_JEFF_OUTCOMES=1                   # outcome labels back to JEFF; on unless 0 (or false/off/no)
 ```
 
 Log lines go to **stderr** as one JSON object each, prefixed with
@@ -215,6 +218,81 @@ the routing descriptions, not from JEFF's tuning. Classes the four routing
 descriptions do not cover depend on the tools' own descriptions, which say
 what a tool computes rather than what a player says.
 
+## Outcomes (since 0.23.0)
+
+JEFF calibrates on labels: after a decision, the caller says what the right
+answer turned out to be (`POST /v1/outcomes`, joined to the decision by its
+id). The Hermes plugin was the first source of such labels; this server is
+the second. Both features now report one, whenever JEFF is configured,
+unless `BOH_JEFF_OUTCOMES=0`.
+
+**The body, the whole of it:**
+
+```json
+{"request_id": "req_01K…", "question": "importance", "outcome": "label", "label": 3}
+{"request_id": "req_01K…", "question": "tool",       "outcome": "label", "label": "srd_get"}
+```
+
+`request_id` is the `id` JEFF returned for the decision, `question` the
+question key the decision asked. An importance label is a **level index**
+(importance − 1, 0–4), which is how JEFF's calibration export reads a score
+label. A tool label is the catalogue key. No `notes`, no record or request
+text, no campaign, namespace, tenant token or record id. The bearer key is
+the same as for decisions.
+
+**When an importance label is posted:**
+
+| JEFF judged the record… | then the host… | label |
+|---|---|---|
+| `on` or `shadow`, record without importance | later records the **same record** again with an explicit importance | that importance, for the earlier decision, once |
+| `shadow`, the host gave an importance in the same call | (nothing further) | JEFF is asked in the background exactly as for a record without importance, and the host's importance is posted as the label of that decision |
+| `on`, the host gave an importance | | nothing: the host's value is used and JEFF is not asked |
+
+"The same record" is the same tenant, campaign, `type` and text (whitespace
+normalised). The memory log is append-only with no update tool, and the
+memory protocol corrects a record by recording it again and forgetting the
+old one; a re-record of the same text with an explicit importance is how a
+host overrides an importance. A corrected *text* is a different record and
+posts nothing, because JEFF judged the old words. The link from decision to
+record is kept in process memory only: an LRU of at most 1000 entries
+(`hash(tenant, campaign, type, text)` → decision id, record id), lost on
+restart. A low-confidence answer that stored nothing is still remembered: a
+label calibrates exactly those. The shadow row is the richest source: every
+record the host scores itself becomes a (JEFF's judgment, host's value) pair,
+and the log line `{"feature":"memory_importance","mode":"shadow","would_store":2,"host":4,…}`
+shows the same pair locally. It costs one JEFF call per such record, in
+shadow mode only.
+
+**When a tool label is posted:** `route_request` returned candidates, and the
+host's **next tool call in the same session**, within 120 s, is one of the
+catalogued tools (every tool but `route_request`). That tool is the label,
+whether or not it was a candidate. The next call consumes the pending
+decision, so a second `route_request`, a call after the window, or a
+`route_request` that returned no candidates posts nothing.
+
+- *Session.* Over HTTP the server is stateless (one MCP server per request,
+  no MCP session id), so the **tenant** stands in for the session: two tables
+  on one tenant token at the same time can label each other's routing. Over
+  stdio the **process** is the session (one host per process). The key is a
+  hash of the tenant token, kept in memory (at most 1000 pending decisions).
+- *Noise.* "The next call" is a heuristic: a host that routes, then reads
+  memory before acting, labels the routing `memory_search`. The label says
+  what the host did, not what was right. Read it in JEFF's `report` before
+  fitting on it.
+- *Only dispatched calls count.* A call the MCP SDK rejects on its input
+  schema never reaches a handler, so it neither labels nor consumes the
+  decision; the host's corrected retry does.
+
+**Fire and forget.** A post is started alongside the tool call and never
+awaited: the tool result does not wait for it, and a test holds the fake
+JEFF's outcome endpoint for 1.5 s and checks the result still arrives in
+under 100 ms. At most four posts are in flight (more are skipped with a log
+line), each bounded by `BOH_JEFF_TIMEOUT_MS`, with no retry. JEFF down, slow
+or answering an error costs one stderr line
+(`{"jeff":true,"feature":"outcome","outcome":"failed_open",…}`); a delivered
+one logs `{"feature":"outcome","question":"tool","label":"srd_get","status":202}`.
+Only ids in JEFF's format (`req_` + ULID) are ever posted.
+
 ## Rejected after reading the code
 
 - **Solo-session oracle** (`src/tools/solo.js`). The solo tools are stateless
@@ -254,11 +332,18 @@ what a tool computes rather than what a player says.
 - **Relay tier hint:** only if relay logs show a real share of model-less
   completions, or if the tier tables get a `large` slot that differs from
   `medium`.
-- **Outcomes:** post `POST /v1/outcomes` when a host later overrides a
-  JEFF-given importance (a `memory_forget` followed by a re-record with an
-  explicit importance), so JEFF's calibration has labels.
+- **Importance labels beyond the same text:** a host that corrects a record
+  (new text) and forgets the old one also says something about the old
+  importance, but not a clean label for JEFF's judgment of the old words. It
+  posts nothing today.
 
 ## What JEFF could change (not done here; JEFF is read-only from this repo)
+
+- **Tell label sources apart.** An outcome has no field for where a label
+  came from, and `notes` is free text (dropped under strict privacy). A
+  host override, a shadow pair and a "next tool call" heuristic are
+  different grades of label; a small `source` enum on `/v1/outcomes` would
+  let the calibration export filter them without a note.
 
 - **Preselection recall on large catalogues.** Done in JEFF D-095/D-096
   (K scales with the option count, rerank preselection for

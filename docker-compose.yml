@@ -109,6 +109,9 @@ services:
       BOH_JEFF_KEY: ${BOH_JEFF_KEY:-}
       BOH_JEFF_MODE: ${BOH_JEFF_MODE:-}
       BOH_JEFF_TIMEOUT_MS: ${BOH_JEFF_TIMEOUT_MS:-}
+      # Outcomes (labels for JEFF's calibration) are on whenever JEFF is;
+      # BOH_JEFF_OUTCOMES=0 turns them off. Empty = on.
+      BOH_JEFF_OUTCOMES: ${BOH_JEFF_OUTCOMES:-}
       # BOH_QDRANT_API_KEY is intentionally absent — see the qdrant service.
       # Uncomment BOTH lines together if you ever enable the key.
       # BOH_QDRANT_API_KEY: ${QDRANT_API_KEY}

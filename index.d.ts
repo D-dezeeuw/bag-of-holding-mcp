@@ -435,18 +435,37 @@ export interface JeffConfig {
   /** "shadow" (default): ask and log only. "on": answers may change results. */
   mode: 'shadow' | 'on';
   timeoutMs: number;
+  /** Post outcomes to JEFF (default true; BOH_JEFF_OUTCOMES=0 turns them off). */
+  outcomes: boolean;
 }
 
 /**
- * Read BOH_JEFF_URL / BOH_JEFF_KEY / BOH_JEFF_MODE / BOH_JEFF_TIMEOUT_MS.
+ * Read BOH_JEFF_URL / BOH_JEFF_KEY / BOH_JEFF_MODE / BOH_JEFF_TIMEOUT_MS /
+ * BOH_JEFF_OUTCOMES.
  * Null unless both URL and key are set and the URL is https (or http to
  * loopback) — and null means no JEFF code runs and no request is made.
  */
 export function resolveJeffConfig(env?: Record<string, string | undefined>): JeffConfig | null;
 
+/**
+ * Fire-and-forget reporter for JEFF `POST /v1/outcomes`. Each post carries
+ * only `{ request_id, question, outcome: "label", label }`.
+ */
+export interface JeffOutcomeReporter {
+  rememberImportance(fingerprint: string, id: string, record: string): void;
+  importanceOverride(fingerprint: string, importance: number): boolean;
+  importanceLabel(id: string, importance: number): boolean;
+  routed(session: string, id: string): void;
+  toolCalled(session: string, tool: string, inCatalogue: boolean): boolean;
+  settled(): Promise<unknown>;
+  readonly remembered: number;
+}
+
 /** The fail-open JEFF client. `decide` never rejects: a failure resolves to null. */
 export interface JeffClient {
   mode: 'shadow' | 'on';
+  /** Null when outcomes are off (BOH_JEFF_OUTCOMES=0). */
+  outcomes?: JeffOutcomeReporter | null;
   decide(args: {
     feature: string;
     family?: string;
@@ -459,7 +478,7 @@ export interface JeffClient {
 /** Build a client for a config; null in, null out. */
 export function createJeffClient(
   config: JeffConfig | null,
-  opts?: { fetchImpl?: typeof fetch; log?: (entry: Record<string, unknown>) => void }
+  opts?: { fetchImpl?: typeof fetch; log?: (entry: Record<string, unknown>) => void; now?: () => number }
 ): JeffClient | null;
 
 // ============================================================

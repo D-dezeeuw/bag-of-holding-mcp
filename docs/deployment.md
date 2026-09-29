@@ -249,7 +249,7 @@ Three things about this deployment specifically:
 
 `memory_record` can ask a [JEFF](jeff-decisions.md) instance to judge how
 important a memory is, and a `route_request` tool appears that asks JEFF
-which tool fits a player's request. The compose file passes four variables through from
+which tool fits a player's request. The compose file passes five variables through from
 `.env`, all as `${VAR:-}`, so the feature is switched purely by `.env` plus a
 redeploy of the app container:
 
@@ -259,6 +259,7 @@ redeploy of the app container:
 | `BOH_JEFF_KEY` | A JEFF caller key minted for this server. Empty = off. |
 | `BOH_JEFF_MODE` | Memory importance only. `shadow` (default): ask and log, change nothing. `on`: apply the judgment. `route_request` ignores it (a query with no side effect). |
 | `BOH_JEFF_TIMEOUT_MS` | Per-request timeout, default 4000. |
+| `BOH_JEFF_OUTCOMES` | `0` turns off the outcome posts (labels for JEFF's calibration: decision id, question key and label, never text). Empty or unset = on. |
 
 Empty URL or key means no JEFF code path runs and no request is made; results,
 and the tool list, are byte-identical to a deployment without the feature.

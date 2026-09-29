@@ -14,6 +14,7 @@ import {
   resolveJeffConfig, createJeffClient, readScore, judgeImportance,
   importanceState, DEFAULT_JEFF_TIMEOUT_MS, MEMORY_TEXT_MAX_CHARS,
   routeState, routeQuestion, firstSentence, ROUTE_DESCRIPTIONS, ROUTE_TEXT_MAX_CHARS,
+  createOutcomeReporter, IMPORTANCE_MEMORY_MAX, OUTCOME_MAX_IN_FLIGHT, ROUTE_OUTCOME_WINDOW_MS,
 } from '../src/jeff.js';
 import { ROUTE_TOOL_NAME, ROUTE_INSTRUCTIONS } from '../src/tools/route.js';
 import { parse } from './_helpers.js';
@@ -115,7 +116,7 @@ test('resolveJeffConfig: https anywhere, plain http only to loopback, junk URLs 
 
 test('resolveJeffConfig: shadow by default, trailing slash and timeout normalised', () => {
   const c = resolveJeffConfig({ BOH_JEFF_URL: 'https://jeff.example/', BOH_JEFF_KEY: ' k ' });
-  assert.deepEqual(c, { url: 'https://jeff.example', key: 'k', mode: 'shadow', timeoutMs: DEFAULT_JEFF_TIMEOUT_MS });
+  assert.deepEqual(c, { url: 'https://jeff.example', key: 'k', mode: 'shadow', timeoutMs: DEFAULT_JEFF_TIMEOUT_MS, outcomes: true });
   assert.equal(resolveJeffConfig({ BOH_JEFF_URL: 'https://j', BOH_JEFF_KEY: 'k', BOH_JEFF_MODE: 'on' }).mode, 'on');
   assert.equal(resolveJeffConfig({ BOH_JEFF_URL: 'https://j', BOH_JEFF_KEY: 'k', BOH_JEFF_MODE: 'ON!' }).mode, 'shadow');
   assert.equal(resolveJeffConfig({ BOH_JEFF_URL: 'https://j', BOH_JEFF_KEY: 'k', BOH_JEFF_TIMEOUT_MS: '250' }).timeoutMs, 250);
@@ -540,4 +541,254 @@ test('firstSentence: one line, first sentence, bounded', () => {
   assert.equal(firstSentence('No stop here'), 'No stop here');
   assert.equal(firstSentence('a\n b.  c'), 'a b.');
   assert.equal(firstSentence('y'.repeat(300)).length, 200);
+});
+
+// ---------------------------------------------------------------- outcomes
+//
+// POST /v1/outcomes (0.23.0): the host's explicit importance and the tool the
+// host called after route_request go back to JEFF as labels, fire-and-forget.
+
+const rid = (n) => `req_${String(n).padStart(26, '0')}`;
+const outcomePosts = () => seen.filter((r) => r.url === '/v1/outcomes');
+async function waitFor(pred, ms = 2000) {
+  const t0 = Date.now();
+  while (!pred()) {
+    if (Date.now() - t0 > ms) throw new Error('waitFor timed out');
+    await new Promise((ok) => setTimeout(ok, 5));
+  }
+}
+/** Decisions answer from `decide`; outcomes get 202 (or `outcome`). */
+function jeffReplies(decide, outcome = () => ({ status: 202, json: { accepted: true } })) {
+  return (body) => (body.request_id !== undefined ? outcome(body) : decide(body));
+}
+const importanceWithId = (id, score = 1, confidence = 0.9) => ({
+  status: 200,
+  json: { id, answers: { importance: { type: 'score', score, confidence, legend: {}, probabilities: {} } }, jeff: { answers: {} } },
+});
+const routeWithId = (id, probabilities = { checks_ability_check: 0.9, dice_roll: 0.1 }) => ({
+  status: 200,
+  json: { id, answers: { tool: { type: 'choice', choice: Object.keys(probabilities)[0], confidence: 0.9, probabilities } }, jeff: { answers: {} } },
+});
+
+test('outcomes: on by default with JEFF; BOH_JEFF_OUTCOMES=0/false/off switches them off', () => {
+  const base = { BOH_JEFF_URL: 'https://j', BOH_JEFF_KEY: 'k' };
+  assert.equal(resolveJeffConfig(base).outcomes, true);
+  assert.equal(resolveJeffConfig({ ...base, BOH_JEFF_OUTCOMES: '' }).outcomes, true);
+  assert.equal(resolveJeffConfig({ ...base, BOH_JEFF_OUTCOMES: '1' }).outcomes, true);
+  for (const off of ['0', 'false', 'off', ' OFF ']) assert.equal(resolveJeffConfig({ ...base, BOH_JEFF_OUTCOMES: off }).outcomes, false);
+  assert.equal(createJeffClient(resolveJeffConfig({ ...base, BOH_JEFF_OUTCOMES: '0' })).outcomes, null);
+  assert.ok(createJeffClient(resolveJeffConfig(base)).outcomes);
+});
+
+test('outcomes, mode on: a later explicit importance on the same record is posted as the label, once', async () => {
+  reply = jeffReplies(() => importanceWithId(rid(1), 1));
+  const { client, logs } = mkClient('on');
+  const s = mkServer(client);
+  const judged = await s.run('memory_record', RECORD);
+  assert.equal(judged.data.importance, 2);
+  assert.equal(outcomePosts().length, 0, 'a judgment alone posts nothing');
+  // The host corrects it: the same record (whitespace aside) with an explicit importance.
+  const t0 = Date.now();
+  const over = await s.run('memory_record', { ...RECORD, text: `  ${RECORD.text.replace(/ /g, '  ')} `, importance: 5 });
+  assert.equal(over.data.importance, 5);
+  await client.outcomes.settled();
+  assert.ok(Date.now() - t0 < 1000);
+  const [post] = outcomePosts();
+  assert.equal(post.headers.authorization, 'Bearer test-key');
+  // Exactly the four fields: the decision id, the question key, "label", the level index (5 → 4).
+  assert.deepEqual(post.body, { request_id: rid(1), question: 'importance', outcome: 'label', label: 4 });
+  assert.equal(seen.filter((r) => r.url === '/v1/systemone').length, 1, 'an explicit importance in mode on never asks JEFF');
+  assert.deepEqual(logs.at(-1), { feature: 'outcome', question: 'importance', label: 4, status: 202 });
+  // Once: a third record of the same text posts nothing more.
+  await s.run('memory_record', { ...RECORD, importance: 3 });
+  await client.outcomes.settled();
+  assert.equal(outcomePosts().length, 1);
+  // A different campaign or text is not the same record.
+  reply = jeffReplies(() => importanceWithId(rid(2), 1));
+  await s.run('memory_record', RECORD);
+  await s.run('memory_record', { ...RECORD, campaign: 'other', importance: 4 });
+  await s.run('memory_record', { ...RECORD, text: 'Something else entirely.', importance: 4 });
+  await client.outcomes.settled();
+  assert.equal(outcomePosts().length, 1);
+});
+
+test('outcomes, shadow mode: the host\'s own importance labels the background judgment; results unchanged', async () => {
+  reply = jeffReplies(() => importanceWithId(rid(3), 0.2));
+  const { client, logs } = mkClient('shadow');
+  const shadow = mkServer(client);
+  const off = mkServer(null);
+  const a = await shadow.run('memory_record', { ...RECORD, importance: 4 });
+  const b = await off.run('memory_record', { ...RECORD, importance: 4 });
+  assert.deepEqual(withoutTs(a.data), withoutTs(b.data));
+  await waitFor(() => outcomePosts().length === 1);
+  assert.deepEqual(outcomePosts()[0].body, { request_id: rid(3), question: 'importance', outcome: 'label', label: 3 });
+  assert.deepEqual(seen[0].body.state, { type: 'event', text: RECORD.text });
+  await waitFor(() => logs.some((l) => l.host === 4));
+  assert.deepEqual(logs.find((l) => l.host === 4), { feature: 'memory_importance', mode: 'shadow', would_store: 1, host: 4, score: 0.2, confidence: 0.9, type: 'event' });
+  await client.outcomes.settled();
+});
+
+test('outcomes, shadow mode: a record without importance, later re-recorded with one, is labelled too', async () => {
+  reply = jeffReplies(() => importanceWithId(rid(4), 2, 0.1));   // too unsure to act on, still a decision
+  const { client } = mkClient('shadow');
+  const s = mkServer(client);
+  await s.run('memory_record', RECORD);
+  await waitFor(() => client.outcomes.remembered === 1);
+  await s.run('memory_record', { ...RECORD, importance: 2 });
+  await client.outcomes.settled();
+  assert.deepEqual(outcomePosts().map((p) => p.body), [{ request_id: rid(4), question: 'importance', outcome: 'label', label: 1 }]);
+  assert.equal(seen.filter((r) => r.url === '/v1/systemone').length, 1, 'an override is not judged again');
+});
+
+test('outcomes, routing: the next catalogue tool call is posted as the choice label', async () => {
+  reply = jeffReplies(() => routeWithId(rid(5)));
+  const { client } = mkClient('shadow');
+  const s = mkServer(client);
+  const routed = await s.run(ROUTE_TOOL_NAME, { request: 'I climb the wall.' });
+  assert.equal(routed.data.candidates[0].tool, 'checks_ability_check');
+  assert.equal(routed.data.id, undefined, 'the decision id stays server-side');
+  const t0 = Date.now();
+  await s.run('guide_list', {});
+  assert.ok(Date.now() - t0 < 500);
+  await client.outcomes.settled();
+  assert.deepEqual(outcomePosts().map((p) => p.body), [{ request_id: rid(5), question: 'tool', outcome: 'label', label: 'guide_list' }]);
+  // Consumed: the call after that posts nothing.
+  await s.run('guide_list', {});
+  await client.outcomes.settled();
+  assert.equal(outcomePosts().length, 1);
+});
+
+test('outcomes, routing: a second route_request, an empty answer or a late call posts nothing for the first', async () => {
+  let t = 1_000_000;
+  let n = 10;
+  reply = jeffReplies(() => routeWithId(rid(n++)));
+  const client = createJeffClient(resolveJeffConfig({ BOH_JEFF_URL: fakeUrl, BOH_JEFF_KEY: 'k', BOH_JEFF_TIMEOUT_MS: '300' }), { log: () => {}, now: () => t });
+  const s = mkServer(client);
+  await s.run(ROUTE_TOOL_NAME, { request: 'a' });            // rid(10)
+  await s.run(ROUTE_TOOL_NAME, { request: 'b' });            // rid(11): replaces 10, which posts nothing
+  await s.run('srd_get', { kind: 'spell', id: 'fireball' });
+  await client.outcomes.settled();
+  assert.deepEqual(outcomePosts().map((p) => p.body.request_id), [rid(11)]);
+  await s.run(ROUTE_TOOL_NAME, { request: 'c' });            // rid(12)
+  t += ROUTE_OUTCOME_WINDOW_MS + 1;
+  await s.run('guide_list', {});   // too late
+  await client.outcomes.settled();
+  assert.equal(outcomePosts().length, 1);
+  reply = jeffReplies(() => routeWithId(rid(13), { not_a_tool: 1 }));
+  await s.run(ROUTE_TOOL_NAME, { request: 'd' });            // no candidates → no pending decision
+  await s.run('guide_list', {});
+  await client.outcomes.settled();
+  assert.equal(outcomePosts().length, 1);
+});
+
+test('outcomes, routing: sessions are per tenant over HTTP-style servers, per process on stdio', async () => {
+  reply = jeffReplies(() => routeWithId(rid(20)));
+  const { client } = mkClient('on');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boh-jeff-'));
+  tmpDirs.push(dataDir);
+  const store = createServer({ memory: { dataDir }, jeff: null }).memory;
+  const tenant = (token) => {
+    const { tools } = createServer({ memoryStore: store, memoryToken: token, jeff: client });
+    return (name, args) => tools.find((t) => t.name === name).handler(args);
+  };
+  await tenant('alpha')(ROUTE_TOOL_NAME, { request: 'x' });
+  await tenant('beta')('guide_list', {});   // another tenant: not the label
+  await client.outcomes.settled();
+  assert.equal(outcomePosts().length, 0);
+  await tenant('alpha')('guide_list', {});  // a fresh server, same tenant
+  await client.outcomes.settled();
+  assert.deepEqual(outcomePosts().map((p) => p.body.label), ['guide_list']);
+});
+
+test('outcomes off (BOH_JEFF_OUTCOMES=0): nothing is posted and shadow never asks for a label', async () => {
+  reply = jeffReplies((body) => (body.questions.tool ? routeWithId(rid(30)) : importanceWithId(rid(31))));
+  for (const mode of ['on', 'shadow']) {
+    const { client } = mkClient(mode, { BOH_JEFF_OUTCOMES: '0' });
+    assert.equal(client.outcomes, null);
+    const s = mkServer(client);
+    await s.run('memory_record', RECORD);
+    await s.run('memory_record', { ...RECORD, importance: 5 });
+    await s.run(ROUTE_TOOL_NAME, { request: 'I climb.' });
+    await s.run('guide_list', {});
+    await new Promise((ok) => setTimeout(ok, 50));
+  }
+  assert.equal(outcomePosts().length, 0);
+  // on: one importance + one route; shadow: one background importance + one route. None for the explicit record.
+  assert.equal(seen.length, 4);
+});
+
+test('outcomes, JEFF unset: no reporter, no wrapper, no request', async () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (...a) => { calls += 1; return realFetch(...a); };
+  try {
+    const s = mkServer(null);
+    await s.run('memory_record', RECORD);
+    await s.run('memory_record', { ...RECORD, importance: 5 });
+    await s.run('guide_list', {});
+    assert.ok(s.tools.every((t) => t.name !== ROUTE_TOOL_NAME));
+  } finally { globalThis.fetch = realFetch; }
+  assert.equal(calls, 0);
+  assert.equal(seen.length, 0);
+});
+
+test('outcomes: JEFF slow or down never delays or breaks a tool result', async () => {
+  // Decisions answer at once; every outcome post hangs past the 300 ms timeout.
+  reply = jeffReplies(
+    (body) => (body.questions.tool ? routeWithId(rid(40)) : importanceWithId(rid(41))),
+    () => ({ status: 202, json: {}, delayMs: 1500 }),
+  );
+  const { client, logs } = mkClient('on');
+  const s = mkServer(client);
+  await s.run('memory_record', RECORD);
+  let t0 = Date.now();
+  const r = await s.run('memory_record', { ...RECORD, importance: 5 });
+  const recordMs = Date.now() - t0;
+  assert.equal(r.data.importance, 5);
+  await s.run(ROUTE_TOOL_NAME, { request: 'I climb.' });
+  t0 = Date.now();
+  const roll = await s.run('guide_list', {});
+  const toolMs = Date.now() - t0;
+  assert.ok(!roll.isError && roll.data);
+  assert.ok(recordMs < 100, `record took ${recordMs} ms`);
+  assert.ok(toolMs < 100, `tool took ${toolMs} ms`);
+  await client.outcomes.settled();
+  assert.equal(logs.filter((l) => l.feature === 'outcome' && l.outcome === 'failed_open' && l.reason === 'timeout').length, 2);
+
+  // Unreachable: the post rejects; still nothing surfaces.
+  const down = createJeffClient(resolveJeffConfig({ BOH_JEFF_URL: 'http://127.0.0.1:1', BOH_JEFF_KEY: 'k', BOH_JEFF_TIMEOUT_MS: '300' }), { log: () => {} });
+  assert.equal(down.outcomes.importanceLabel(rid(42), 3), true);
+  await down.outcomes.settled();
+});
+
+test('outcome reporter: the importance memory is an LRU of at most 1000; in-flight posts are capped', async () => {
+  const bodies = [];
+  let release;
+  const gate = new Promise((ok) => { release = ok; });
+  const fetchImpl = async (url, init) => { bodies.push(JSON.parse(init.body)); await gate; return new Response('{}', { status: 202 }); };
+  const logs = [];
+  const r = createOutcomeReporter({ url: 'https://j', key: 'k', timeoutMs: 5000 }, { fetchImpl, log: (e) => logs.push(e) });
+  for (let i = 0; i < IMPORTANCE_MEMORY_MAX + 5; i++) r.rememberImportance(`fp${i}`, rid(i), `m-${i}`);
+  assert.equal(r.remembered, IMPORTANCE_MEMORY_MAX);
+  assert.equal(r.importanceOverride('fp0', 3), false, 'the oldest were evicted');
+  assert.equal(r.importanceOverride('fp4', 3), false);
+  // Touching an entry makes it the newest.
+  r.rememberImportance('fp5', rid(5), 'm-5');
+  r.rememberImportance('fpX', rid(9999), 'm-x');
+  assert.equal(r.importanceOverride('fp5', 3), true);
+  assert.equal(r.importanceOverride('fp6', 3), false, 'fp6 was the oldest after fp5 moved up');
+  // A malformed id is never remembered or posted.
+  r.rememberImportance('bad', 'req_x', 'm-1');
+  assert.equal(r.importanceOverride('bad', 3), false);
+  assert.equal(r.importanceLabel('nope', 3), false);
+  // Two posts are in flight; fill up to the cap, then one more is skipped.
+  for (let i = 0; i < OUTCOME_MAX_IN_FLIGHT - 1; i++) assert.equal(r.importanceLabel(rid(i), 1), true);
+  assert.equal(r.importanceLabel(rid(77), 1), false);
+  assert.ok(logs.some((l) => l.outcome === 'skipped'));
+  release();
+  await r.settled();
+  assert.equal(r.importanceLabel(rid(78), 1), true);
+  await r.settled();
+  // Privacy: every body is exactly id, question, "label", label.
+  for (const b of bodies) assert.deepEqual(Object.keys(b).sort(), ['label', 'outcome', 'question', 'request_id']);
 });

@@ -47,7 +47,8 @@ import { soloTools } from './tools/solo.js';
 import { narrationTools } from './tools/narration.js';
 import { imageTools } from './tools/images.js';
 import { resolveJeffConfig, createJeffClient } from './jeff.js';
-import { routeTools, ROUTE_INSTRUCTIONS } from './tools/route.js';
+import { routeTools, withRouteOutcomes, ROUTE_INSTRUCTIONS } from './tools/route.js';
+import { createHash } from 'node:crypto';
 
 const SERVER_NAME = 'bag-of-holding';
 // The version every MCP handshake advertises. Read from package.json
@@ -139,8 +140,14 @@ export function createServer(opts = {}) {
   // route_request exists only with JEFF configured, and so do the server
   // instructions that point hosts at it. Without JEFF the tool list and the
   // handshake are exactly those of 0.21.0 (tests/jeff.test.js pins it).
-  const routing = routeTools(jeff, baseTools);
-  const allTools = [...baseTools, ...routing];
+  // Routing outcomes (0.23.0) are tracked per session. HTTP is stateless (one
+  // server per request), so the tenant stands in for the session; stdio is
+  // one process. The key is a hash and never leaves the process.
+  const routeSession = opts.memoryToken !== undefined
+    ? `tenant:${createHash('sha256').update(String(opts.memoryToken)).digest('hex').slice(0, 16)}`
+    : 'process';
+  const routing = routeTools(jeff, baseTools, { session: routeSession });
+  const allTools = withRouteOutcomes([...baseTools, ...routing], jeff, routeSession);
   const server = routing.length > 0
     ? new McpServer({ name: SERVER_NAME, version: SERVER_VERSION }, { instructions: ROUTE_INSTRUCTIONS })
     : new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });

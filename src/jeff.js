@@ -23,6 +23,8 @@
 //     turned into an answer (JEFF's own design rule 5).
 //   • Say little. Each feature sends only the text its question is about,
 //     clipped; never a token, a namespace, a campaign name or a record id.
+//     An outcome (POST /v1/outcomes, since 0.23.0) carries only JEFF's own
+//     decision id, the question key and the observed label.
 //
 // No dependency: the platform fetch, like the embeddings and Qdrant clients.
 
@@ -36,6 +38,21 @@ export const MEMORY_TEXT_MAX_CHARS = 1000;
 export const MIN_CONFIDENCE = 0.2;
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/** JEFF's decision id: req_ + a ULID (JEFF server/contract/response.js). Anything else is never posted. */
+export const JEFF_REQUEST_ID_RE = /^req_[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** At most this many outcome posts in flight; more are skipped with a log line (as the Hermes plugin does). */
+export const OUTCOME_MAX_IN_FLIGHT = 4;
+
+/** Importance decisions remembered per process for a later host override (LRU). */
+export const IMPORTANCE_MEMORY_MAX = 1000;
+
+/** A route_request answer is labelled by the next tool call only within this window. */
+export const ROUTE_OUTCOME_WINDOW_MS = 120_000;
+
+/** Pending routing decisions kept per process (one per session key; HTTP has one per tenant). */
+export const ROUTE_PENDING_MAX = 1000;
 
 /**
  * Read the JEFF configuration out of an environment.
@@ -56,11 +73,15 @@ export function resolveJeffConfig(env = process.env) {
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK.has(url.hostname))) return null;
   const mode = JEFF_MODES.includes(env.BOH_JEFF_MODE ?? '') ? env.BOH_JEFF_MODE : 'shadow';
   const timeout = Number.parseInt(env.BOH_JEFF_TIMEOUT_MS ?? '', 10);
+  // Outcomes are on whenever JEFF is; BOH_JEFF_OUTCOMES=0 (or false/off/no)
+  // switches them off. Empty (the compose pass-through) means on.
+  const outcomesFlag = String(env.BOH_JEFF_OUTCOMES ?? '').trim().toLowerCase();
   return {
     url: rawUrl.replace(/\/+$/, ''),
     key,
     mode,
     timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_JEFF_TIMEOUT_MS,
+    outcomes: !['0', 'false', 'off', 'no'].includes(outcomesFlag),
   };
 }
 
@@ -79,7 +100,7 @@ function defaultLog(entry) {
  * double the wait the timeout exists to bound.
  *
  * @param {ReturnType<typeof resolveJeffConfig>} config
- * @param {{ fetchImpl?: typeof fetch, log?: (entry: object) => void }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, log?: (entry: object) => void, now?: () => number }} [opts]
  */
 export function createJeffClient(config, opts = {}) {
   if (!config) return null;
@@ -113,6 +134,8 @@ export function createJeffClient(config, opts = {}) {
 
   return {
     mode: config.mode,
+    /** The outcome reporter (see createOutcomeReporter), or null with BOH_JEFF_OUTCOMES=0. */
+    outcomes: config.outcomes === false ? null : createOutcomeReporter(config, { fetchImpl, log, now: opts.now }),
     /**
      * Ask JEFF. `feature` names the caller in the log line; `family` is JEFF's
      * decision family (routing and telemetry grouping on its side).
@@ -133,6 +156,131 @@ export function createJeffClient(config, opts = {}) {
       return out.json;
     },
     log,
+  };
+}
+
+/** JEFF's decision id of a response, or null when it is not a well-formed one. */
+export function decisionId(response) {
+  const id = response?.id;
+  return typeof id === 'string' && JEFF_REQUEST_ID_RE.test(id) ? id : null;
+}
+
+// ---------------------------------------------------------------------------
+// Outcomes: what happened after a decision (JEFF POST /v1/outcomes).
+//
+// JEFF joins an outcome to its decision by id and fits calibration on the
+// `label` outcomes. Two sources, wired in src/tools/memory.js and
+// src/tools/route.js:
+//
+//   • importance — the host's explicit importance for a record JEFF judged
+//     (a later re-record of the same text, or, in shadow mode, the value the
+//     host gave in the very request JEFF judged in the background). The label
+//     is a score level index: importance − 1.
+//   • tool — the catalogue tool the host called next after route_request
+//     (same session, within ROUTE_OUTCOME_WINDOW_MS). The label is its name.
+//
+// Every post is fire-and-forget: never awaited by a tool, bounded by the
+// client timeout, at most OUTCOME_MAX_IN_FLIGHT at once, not retried, and any
+// failure is one log line. The body is
+// { request_id, question, outcome: "label", label } and nothing else: no
+// text, no campaign, no namespace, no token.
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {NonNullable<ReturnType<typeof resolveJeffConfig>>} config
+ * @param {{ fetchImpl: typeof fetch, log: (entry: object) => void, now?: () => number }} deps
+ */
+export function createOutcomeReporter(config, { fetchImpl, log, now = Date.now }) {
+  let inFlight = 0;
+  const running = new Set();
+  /** fingerprint → { id, record }, in insertion (= recency) order: an LRU. */
+  const importance = new Map();
+  /** session key → { id, at } */
+  const routes = new Map();
+
+  function safeLog(entry) { try { log(entry); } catch { /* never breaks a call */ } }
+
+  function post(body) {
+    if (inFlight >= OUTCOME_MAX_IN_FLIGHT) {
+      safeLog({ feature: 'outcome', question: body.question, outcome: 'skipped', reason: 'in_flight' });
+      return false;
+    }
+    inFlight += 1;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), config.timeoutMs);
+    const p = (async () => {
+      try {
+        const res = await fetchImpl(`${config.url}/v1/outcomes`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${config.key}` },
+          body: JSON.stringify(body),
+          signal: ctl.signal,
+        });
+        try { await res.text(); } catch { /* the body is not needed */ }
+        safeLog({ feature: 'outcome', question: body.question, label: body.label, status: res.status });
+      } catch {
+        safeLog({ feature: 'outcome', question: body.question, outcome: 'failed_open', reason: ctl.signal.aborted ? 'timeout' : 'network' });
+      } finally {
+        clearTimeout(timer);
+        inFlight -= 1;
+      }
+    })();
+    running.add(p);
+    p.finally(() => running.delete(p));
+    return true;
+  }
+
+  function label(id, question, value) {
+    if (typeof id !== 'string' || !JEFF_REQUEST_ID_RE.test(id)) return false;
+    return post({ request_id: id, question, outcome: 'label', label: value });
+  }
+
+  return {
+    /** Remember an importance decision for a record, for a later host override. */
+    rememberImportance(fingerprint, id, record) {
+      if (typeof id !== 'string' || !JEFF_REQUEST_ID_RE.test(id)) return;
+      importance.delete(fingerprint);
+      importance.set(fingerprint, { id, record });
+      while (importance.size > IMPORTANCE_MEMORY_MAX) importance.delete(importance.keys().next().value);
+    },
+    /**
+     * The host gave an explicit importance (1-5) for a record with this
+     * fingerprint. Posts it as the label of the remembered decision (once)
+     * and returns true, or returns false when none is remembered.
+     */
+    importanceOverride(fingerprint, value) {
+      const hit = importance.get(fingerprint);
+      if (!hit) return false;
+      importance.delete(fingerprint);
+      label(hit.id, 'importance', value - 1);
+      return true;
+    },
+    /** Post an importance (1-5) as the label of decision `id`. */
+    importanceLabel(id, value) { return label(id, 'importance', value - 1); },
+    /** route_request answered with decision `id` in this session. */
+    routed(session, id) {
+      if (typeof id !== 'string' || !JEFF_REQUEST_ID_RE.test(id)) return;
+      routes.delete(session);
+      routes.set(session, { id, at: now() });
+      while (routes.size > ROUTE_PENDING_MAX) routes.delete(routes.keys().next().value);
+    },
+    /**
+     * A tool was called in this session. If route_request answered before it
+     * (within the window) and `tool` is in the routed catalogue, post the
+     * tool as the label. The pending decision is consumed either way, so a
+     * second route_request or a non-catalogue tool posts nothing.
+     */
+    toolCalled(session, tool, inCatalogue) {
+      const p = routes.get(session);
+      if (!p) return false;
+      routes.delete(session);
+      if (!inCatalogue || now() - p.at > ROUTE_OUTCOME_WINDOW_MS) return false;
+      return label(p.id, 'tool', tool);
+    },
+    /** Resolves when every post in flight has finished (tests, shutdown). */
+    settled: () => Promise.allSettled([...running]),
+    /** How many importance decisions are remembered. */
+    get remembered() { return importance.size; },
   };
 }
 
@@ -185,6 +333,16 @@ export function importanceState(type, text) {
  * too little confidence to act on.
  */
 export async function judgeImportance(jeff, type, text) {
+  return (await askImportance(jeff, type, text)).judgment;
+}
+
+/**
+ * judgeImportance plus JEFF's decision id: `{ id, judgment }`. `id` is set
+ * whenever JEFF answered the importance question with a well-formed id, even
+ * with too little confidence to act on (a later label still calibrates it);
+ * `judgment` is what judgeImportance returns.
+ */
+export async function askImportance(jeff, type, text) {
   const res = await jeff.decide({
     feature: 'memory_importance',
     family: 'boh_memory_importance',
@@ -192,10 +350,11 @@ export async function judgeImportance(jeff, type, text) {
     questions: { importance: IMPORTANCE_QUESTION },
   });
   const s = readScore(res, 'importance');
-  if (!s) return null;
-  if (s.confidence !== null && s.confidence < MIN_CONFIDENCE) return null;
+  if (!s) return { id: null, judgment: null };
+  const id = decisionId(res);
+  if (s.confidence !== null && s.confidence < MIN_CONFIDENCE) return { id, judgment: null };
   const importance = Math.min(5, Math.max(1, Math.round(s.score) + 1));
-  return { importance, score: s.score, confidence: s.confidence };
+  return { id, judgment: { importance, score: s.score, confidence: s.confidence } };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +433,10 @@ export function routeState(text) {
  * @param {ReturnType<typeof createJeffClient>} jeff
  * @param {{ question: object, hints: Map<string, string> }} catalogue  from routeCatalogue()
  * @param {string} text
+ * @param {{ onDecision?: (id: string) => void }} [opts]  called with JEFF's
+ *   decision id when candidates are returned (the outcome hook)
  */
-export async function routeRequest(jeff, catalogue, text) {
+export async function routeRequest(jeff, catalogue, text, opts = {}) {
   let res;
   try {
     res = await jeff.decide({
@@ -297,6 +458,8 @@ export async function routeRequest(jeff, catalogue, text) {
   const candidates = ranked.map(([tool, p]) => ({ tool, probability: Math.round(p * 1000) / 1000, hint: catalogue.hints.get(tool) }));
   const confidence = typeof a.confidence === 'number' && Number.isFinite(a.confidence) ? a.confidence : null;
   try { jeff.log({ feature: 'tool_route', top: candidates[0].tool, probability: candidates[0].probability, confidence }); } catch { /* never breaks a call */ }
+  const id = decisionId(res);
+  if (id && opts.onDecision) { try { opts.onDecision(id); } catch { /* never breaks a call */ } }
   return { candidates, confidence };
 }
 

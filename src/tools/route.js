@@ -22,10 +22,15 @@ export const ROUTE_INSTRUCTIONS = `When you are unsure which Bag of Holding tool
 /**
  * @param jeff   the JEFF client, or null (then no tool)
  * @param tools  the server's other tools `[{ name, description }]`, the catalogue routed over
+ * @param opts   `session`: the key the outcome of a routing decision is
+ *               tracked under (see withRouteOutcomes)
  */
-export function routeTools(jeff, tools) {
+export function routeTools(jeff, tools, opts = {}) {
   if (!jeff) return [];
   const catalogue = routeCatalogue(tools);
+  const outcomes = jeff.outcomes ?? null;
+  const session = opts.session ?? 'process';
+  const onDecision = outcomes ? (id) => outcomes.routed(session, id) : undefined;
   return [
     {
       name: ROUTE_TOOL_NAME,
@@ -35,11 +40,42 @@ export function routeTools(jeff, tools) {
       },
       handler: async ({ request }) => {
         try {
-          return toolResult(await routeRequest(jeff, catalogue, request));
+          return toolResult(await routeRequest(jeff, catalogue, request, { onDecision }));
         } catch {
           return toolResult({ candidates: [], reason: 'Routing failed. Choose the tool yourself.' });
         }
       },
     },
   ];
+}
+
+/**
+ * The outcome of a routing decision is the tool the host actually called
+ * next. Wraps every tool's handler so a call first tells the outcome
+ * reporter which tool ran in this session; the reporter posts it as the
+ * label of a route_request answered within the last 120 s, and only when it
+ * is one of the routed catalogue's tools. route_request itself is not in the
+ * catalogue, so a second route_request consumes the pending decision and
+ * posts nothing. The wrapper never awaits the post and never changes a
+ * result. Without JEFF, with outcomes off, or without route_request, the
+ * tools are returned untouched.
+ *
+ * `session` is the session key: HTTP has no MCP session (stateless, one
+ * server per request), so it is the tenant; stdio is one process.
+ *
+ * @param {Array<{ name: string, handler: Function }>} tools  every tool, route_request included
+ * @param jeff     the JEFF client, or null
+ * @param session  the session key
+ */
+export function withRouteOutcomes(tools, jeff, session) {
+  const outcomes = jeff?.outcomes ?? null;
+  if (!outcomes || !tools.some((t) => t.name === ROUTE_TOOL_NAME)) return tools;
+  const catalogue = new Set(tools.filter((t) => t.name !== ROUTE_TOOL_NAME).map((t) => t.name));
+  return tools.map((t) => ({
+    ...t,
+    handler: (...args) => {
+      try { outcomes.toolCalled(session, t.name, catalogue.has(t.name)); } catch { /* never breaks a call */ }
+      return t.handler(...args);
+    },
+  }));
 }

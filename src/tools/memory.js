@@ -25,7 +25,8 @@ import { z } from 'zod';
 import { toolResult, toolError } from '../_result.js';
 import { MEMORY_TYPES } from '../memory/store.js';
 import { tenantFields } from './_tenant.js';
-import { judgeImportance } from '../jeff.js';
+import { createHash } from 'node:crypto';
+import { askImportance } from '../jeff.js';
 
 const CampaignField = z.string().describe(
   'Campaign name, e.g. "curse-of-the-fen". 1-64 chars of A-Za-z0-9_- (it becomes a folder name). Use one campaign name per table and stick to it.'
@@ -82,8 +83,11 @@ export function memoryTools(store, pinnedToken, jeff = null) {
         try {
           const { campaign, type, text, entities, tags, importance } = args;
           const token = tokenOf(args);
-          if (jeff && importance === undefined && store.isAuthorized(token)) {
-            return toolResult(await recordWithJeff(jeff, store, token, campaign, { type, text, entities, tags }));
+          if (jeff && store.isAuthorized(token)) {
+            if (importance === undefined) {
+              return toolResult(await recordWithJeff(jeff, store, token, campaign, { type, text, entities, tags }));
+            }
+            return toolResult(recordExplicitWithJeff(jeff, store, token, campaign, { type, text, entities, tags, importance }));
           }
           return toolResult(store.record(token, campaign, { type, text, entities, tags, importance }));
         } catch (err) { return toolError(err); }
@@ -242,16 +246,61 @@ export function memoryTools(store, pinnedToken, jeff = null) {
  * carries numbers, never text.
  */
 async function recordWithJeff(jeff, store, token, campaign, input) {
+  const outcomes = jeff.outcomes ?? null;
+  const fp = outcomes ? recordFingerprint(token, campaign, input) : null;
   if (jeff.mode !== 'on') {
     const rec = store.record(token, campaign, input);
-    judgeImportance(jeff, input.type, input.text).then((j) => {
+    askImportance(jeff, input.type, input.text).then(({ id, judgment: j }) => {
       if (j) jeff.log({ feature: 'memory_importance', mode: 'shadow', would_store: j.importance, score: j.score, confidence: j.confidence, type: input.type });
+      if (outcomes && id) outcomes.rememberImportance(fp, id, rec.id);
     });
     return rec;
   }
-  const j = await judgeImportance(jeff, input.type, input.text);
-  if (!j) return store.record(token, campaign, input);
-  const rec = store.record(token, campaign, { ...input, importance: j.importance });
+  const { id, judgment: j } = await askImportance(jeff, input.type, input.text);
+  const rec = store.record(token, campaign, j ? { ...input, importance: j.importance } : input);
+  if (outcomes && id) outcomes.rememberImportance(fp, id, rec.id);
+  if (!j) return rec;
   jeff.log({ feature: 'memory_importance', mode: 'on', stored: j.importance, score: j.score, confidence: j.confidence, type: input.type });
   return { ...rec, importanceJudged: { by: 'jeff', score: j.score, confidence: j.confidence } };
+}
+
+/**
+ * `memory_record` with a host-given importance, JEFF configured. The record
+ * is written exactly as without JEFF and nothing here is awaited. The host's
+ * number is the label JEFF's calibration needs (docs/jeff-decisions.md,
+ * "Outcomes"):
+ *
+ *   • If JEFF judged a record with the same type and text in this
+ *     namespace and campaign (remembered in memory, at most 1000, per
+ *     process), the host is overriding that judgment: post the value as
+ *     that decision's label, once.
+ *   • Otherwise, in shadow mode only, ask JEFF in the background, as for a
+ *     record without importance, and post the host's value as the label of
+ *     that fresh decision. In `on` mode the host's value is simply used and
+ *     JEFF is not asked (no cost where nothing would be learned twice).
+ *
+ * With outcomes off (BOH_JEFF_OUTCOMES=0) this is exactly the plain path.
+ */
+function recordExplicitWithJeff(jeff, store, token, campaign, input) {
+  const rec = store.record(token, campaign, input);
+  const outcomes = jeff.outcomes ?? null;
+  if (!outcomes) return rec;
+  if (outcomes.importanceOverride(recordFingerprint(token, campaign, input), input.importance)) return rec;
+  if (jeff.mode !== 'on') {
+    askImportance(jeff, input.type, input.text).then(({ id, judgment: j }) => {
+      if (j) jeff.log({ feature: 'memory_importance', mode: 'shadow', would_store: j.importance, host: input.importance, score: j.score, confidence: j.confidence, type: input.type });
+      if (id) outcomes.importanceLabel(id, input.importance);
+    });
+  }
+  return rec;
+}
+
+/**
+ * Which record a later memory_record is "the same record" as: tenant,
+ * campaign, type and whitespace-normalised text, hashed. It stays in this
+ * process's memory and is never sent anywhere.
+ */
+function recordFingerprint(token, campaign, { type, text }) {
+  const norm = String(text).trim().replace(/\s+/g, ' ');
+  return createHash('sha256').update(JSON.stringify([token ?? '', campaign, type, norm])).digest('hex');
 }

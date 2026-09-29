@@ -324,8 +324,18 @@ BOH_JEFF_URL=https://jeff.example   # unset = off, nothing changes, no request i
 BOH_JEFF_KEY=…                      # a JEFF API key
 BOH_JEFF_MODE=shadow                # memory importance only — shadow (default): ask and log | on: store the judged importance
 BOH_JEFF_TIMEOUT_MS=4000
+BOH_JEFF_OUTCOMES=1                 # outcome labels back to JEFF (default on); 0 = off
 ```
 
+- **Outcomes (since 0.23.0).** What happened afterwards goes back to JEFF as
+  a label for its calibration: the host's explicit importance for a record
+  JEFF judged (a later re-record of the same text; in shadow mode also the
+  importance the host gave in the call JEFF judged in the background), and
+  the tool the host called next after `route_request` (same session, within
+  120 s). Only the decision id, the question key and the label are sent:
+  `{"request_id":"req_…","question":"tool","outcome":"label","label":"srd_get"}`.
+  Fire-and-forget, never delays a result. `BOH_JEFF_OUTCOMES=0` turns it
+  off. Over HTTP the "session" is the tenant, over stdio the process.
 - **Unset means unchanged:** without URL and key there is no `route_request`,
   no server instructions, and the tool list is byte-identical to 0.21.0 (a
   test pins its hash).
@@ -338,7 +348,9 @@ BOH_JEFF_TIMEOUT_MS=4000
 - **What leaves the server:** for importance, the record's `type` and its
   `text` (clipped to 1000 characters); for routing, the request text
   (clipped to 500 characters) plus the tool catalogue (names and
-  descriptions, public anyway). No entities, campaign, namespace or token.
+  descriptions, public anyway); for an outcome, JEFF's decision id, the
+  question key and the label (an importance level or a tool name). No
+  entities, campaign, namespace or token.
   It is campaign prose, so point this only at a JEFF you run or trust.
 - **Logs:** one JSON line per judgment on stderr (numbers and tool names,
   never text).
